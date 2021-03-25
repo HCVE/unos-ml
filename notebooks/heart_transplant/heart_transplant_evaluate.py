@@ -121,7 +121,6 @@ def evaluate(
             parallel=parallel,
             n_jobs=n_jobs,
         ),
-        force_execute=True,
     )
 
     method_name = 'xgboost_default'

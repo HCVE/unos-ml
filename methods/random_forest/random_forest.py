@@ -113,10 +113,7 @@ class RandomForestMethod(Method):
                 ('onehot', None),
                 ('imputer', None),
                 ('upsampler', RandomOverSampler()),
-                (
-                    "classifier",
-                    RandomForestClassifier(n_jobs=20)
-                ),
+                ("classifier", RandomForestClassifier(n_jobs=20)),
             ],
         )
         return classifier

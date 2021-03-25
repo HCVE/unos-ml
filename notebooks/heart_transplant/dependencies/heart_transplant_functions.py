@@ -17,6 +17,7 @@ from evaluation_functions import compute_classification_metrics_from_results_wit
 from formatting import compare_metrics_in_table, render_struct_table
 from functional import pipe
 from utils import balanced_range, get_ilocs_by_callback, evaluate_and_assign_if_not_present
+from sklearn.model_selection import KFold
 
 SURVIVAL_DAYS_DEFAULT: int = 365
 

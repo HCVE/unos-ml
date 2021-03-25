@@ -972,11 +972,16 @@ def remove_suffix(suffix: str, input_str: str) -> str:
         return input_str[:]
 
 
+def remove_suffixes(suffixes: List[str], input_str: str) -> str:
+    processed_str = input_str
+    for suffix in suffixes:
+        processed_str = remove_suffix(suffix, processed_str)
+    return processed_str
+
+
 def mapping_subset(keys: Iterable[str], input_mapping: Mapping) -> Mapping:
-    return pipe(
-        input_mapping,
-        partial(keyfilter, lambda key: key in keys)
-    )
+    return pipe(input_mapping, partial(keyfilter, lambda key: key in keys))
+
 
 empty_dict: Mapping = frozendict()
 

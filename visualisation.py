@@ -17,6 +17,7 @@ from scipy.cluster.hierarchy import dendrogram
 from sklearn.metrics import silhouette_samples, silhouette_score, roc_curve, auc
 from toolz.curried import map
 
+from utils import empty_dict
 from clustering import get_cluster_count, ClusteringProtocol, get_counts_per_cluster, \
     measure_cluster_features_statistics, map_y_pred_by_prevalence, get_cluster_identifiers
 from evaluation_functions import ModelCVResult, ModelResult, \
@@ -377,7 +378,11 @@ def plot_roc_from_result(
 
 
 def plot_roc_from_results_averaged(
-    y: Series, results: List[ModelCVResult], label: str = None
+    y: Series,
+    results: List[ModelCVResult],
+    label: str = None,
+    plot_kwargs: Mapping = empty_dict,
+    display_random_curve: bool = True,
 ) -> None:
     normalized_fpr = np.linspace(0, 1, 99)
 
@@ -399,12 +404,20 @@ def plot_roc_from_results_averaged(
     mean_auc: float = np.mean(aucs)
     std_auc: float = np.std(aucs, ddof=0)
     plt.plot(
-        normalized_fpr,
-        mean_tpr,
-        lw=1.5,
-        label=f'{"ROC curve" if not label else label} (AUC=%0.3f ±%0.3f)' % (mean_auc, std_auc)
+        normalized_fpr, mean_tpr,
+        **merge(
+            dict(
+                lw=1.5,
+                label=f'{"ROC curve" if not label else label} (AUC=%0.3f ±%0.3f)' %
+                (mean_auc, std_auc),
+            ),
+            plot_kwargs,
+        )
     )
-    plt.plot([0, 1], [0, 1], color='#CCCCCC', lw=0.75, linestyle=':')
+
+    if display_random_curve:
+        plt.plot([0, 1], [0, 1], color='#CCCCCC', lw=0.75, linestyle='-')
+
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
     plt.xlabel('False Positive Rate')

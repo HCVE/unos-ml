@@ -151,11 +151,6 @@ def count_values_and_align(series1: Series, series2: Series) -> Tuple[Series, Se
 def measure_cluster_features_statistics(X: DataFrame, y_pred: Series):
     X = X.copy()
 
-    # try:
-    #     X['SMK'] = X['SMK'] >= 1
-    #     X['SMK'] = X['SMK'].apply(lambda value: 1 if value else 0)
-    # except KeyError:
-    #     pass
     log_transformed = ('LPRA', 'LINS', 'LLEPT', 'LFERR', 'LALDO', 'LCRTSL')
 
     for feature in log_transformed:
@@ -318,53 +313,6 @@ def average_purity(y_pred: List[int], y_true: List[int]) -> float:
     return np.mean(rates)
 
 
-def optimal_k(data, nrefs=3, maxClusters=15):
-    """
-    Calculates KMeans optimal K using Gap Statistic from Tibshirani, Walther, Hastie
-    Params:
-        data: ndarry of shape (n_samples, n_features)
-        nrefs: number of sample reference benchmark to create
-        maxClusters: Maximum number of clusters to test for
-    Returns: (gaps, optimalK)
-    """
-    gaps = np.zeros((len(range(1, maxClusters)), ))
-    resultsdf = DataFrame({'clusterCount': [], 'gap': []})
-    for gap_index, k in enumerate(range(1, maxClusters)):
-
-        # Holder for reference dispersion results
-        refDisps = np.zeros(nrefs)
-
-        # For n references, generate random sample and perform kmeans getting resulting dispersion of each loop
-        for i in range(nrefs):
-            # Create new random reference set
-            randomReference = np.random.random_sample(size=data.shape)
-
-            # Fit to it
-            km = KMeans(k)
-            km.fit(randomReference)
-
-            refDisp = km.inertia_
-            refDisps[i] = refDisp
-
-        # Fit cluster to original data and create dispersion
-        km = KMeans(k)
-        km.fit(data)
-
-        origDisp = km.inertia_
-
-        # Calculate gap statistic
-        gap = np.log(np.mean(refDisps)) - np.log(origDisp)
-
-        # Assign this loop's gap statistic to gaps
-        gaps[gap_index] = gap
-
-        resultsdf = resultsdf.append({'clusterCount': k, 'gap': gap}, ignore_index=True)
-
-    return (
-        gaps.argmax() + 1, resultsdf
-    )  # Plus 1 because index of 0 means 1 cluster is optimal, index 2 = 3 clusters are optimal
-
-
 class KMeansProtocol(ClusteringProtocol):
 
     @staticmethod
@@ -386,19 +334,6 @@ class KMeansProtocol(ClusteringProtocol):
             .fit_predict(X)
 
 
-# class WKKMeansProtocol(ClusteringProtocol):
-#
-#     @staticmethod
-#     def get_pipeline(k: int) -> Pipeline:
-#         return Pipeline([
-#             ('scaler', StandardScaler()),
-#             ('clustering', WKMeans(k, beta=1)),
-#         ])
-#
-#     def algorithm(self, X, n_clusters) -> List[int]:
-#         return self \
-#             .get_pipeline(n_clusters).set_params(**self.parameters) \
-#             .fit_predict(X)
 
 
 class AgglomerativeProtocol(ClusteringProtocol):
@@ -499,6 +434,7 @@ class GaussianMixtureProtocol(ClusteringProtocol):
         # noinspection PyArgumentEqualDefault
         return Pipeline(
             [
+                ('scaler', StandardScaler()),
                 (
                     'clustering',
                     GaussianMixture(
@@ -758,12 +694,6 @@ def supply_missing_labels(contingency: ndarray) -> ndarray:
 
 
 def align_clusters(y_pred_1: List[int], y_pred_2: List[int]) -> Tuple[List[int], List[int]]:
-    """
-    Use the Hungarian (Kuhn–Munkres) algorithm to align two sets of cluster
-    labels for the same dataset as phrased as a combinational optimziation
-    algorithm that runs in O(n^3) time. Recreates the cluster labels for
-    both versions of the cluster labels and returns them.
-    """
 
     contingency, labels_v1, labels_v2 = contingency_matrix(y_pred_1, y_pred_2)
     contingency = supply_missing_labels(contingency)
@@ -796,10 +726,5 @@ def contingency_matrix(
 
 
 def generate_random_clusters(n_clusters: int, size: int) -> List[int]:
-    """
-    Generate two random sets of cluster labels with n_clusters
-    with an equal 1/n_clusters chance for each point to belong
-    to a given cluster.
-    """
     rand_labels = [randint(1, n_clusters) for _ in range(size)]
     return rand_labels

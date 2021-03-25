@@ -11,12 +11,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer
+from sksurv.linear_model import CoxPHSurvivalAnalysis
 from toolz import merge, concat
 from typing import List, Tuple, Any
 from xgboost import XGBClassifier
 
 from functional import pipe
-from sksurv.linear_model import CoxPHSurvivalAnalysis
 from utils import map_columns, \
     remove_prefix
 from wrapped_sklearn import DFColumnTransformer, DFSimpleImputer, DFOneHotEncoder, DFStandardScaler, DFPipeline, \
@@ -104,6 +104,7 @@ xgboost_hyperopt = hp.choice(
 )
 
 
+# noinspection PyUnusedLocal
 def get_logistic_regression_pipeline(
     X: DataFrame,
     y: Series,
@@ -148,7 +149,6 @@ logistic_regression_hyperopt = hp.choice(
     }]
 )
 
-
 class CoxPHSurvivalAnalysis1Year(CoxPHSurvivalAnalysis):
 
     def predict_proba(self, X) -> DataFrame:
@@ -161,7 +161,6 @@ class CoxPHSurvivalAnalysis1Year(CoxPHSurvivalAnalysis):
             },
             index=X.index
         )
-
 
 cox_ph_hyperopt = hp.choice(
     'base', [
@@ -181,8 +180,7 @@ cox_ph_hyperopt = hp.choice(
     ]
 )
 
-
-# noinspection PyUnusedLocal
+noinspection PyUnusedLocal
 def get_cox_ph_pipeline(
     X: DataFrame,
     features: List[str] = None,
@@ -203,6 +201,8 @@ def get_cox_ph_pipeline(
     )
 
 
+
+# noinspection PyUnusedLocal
 def get_dummy_classifier_pipeline(X: DataFrame, y: Series, features: List[str], n_jobs: int = None):
     return make_pipeline(DummyClassifier(strategy='stratified'))
 

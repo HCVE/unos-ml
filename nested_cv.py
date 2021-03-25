@@ -413,7 +413,7 @@ class BayesianOptimization(ReturnHyperParameters):
     def __init__(
         self,
         space: Any,
-        iterations: int = 100,
+        iterations: int = 50,
         target_metric='roc_auc',
         return_trials: bool = False
     ):

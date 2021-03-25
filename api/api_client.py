@@ -21,9 +21,6 @@ class WebsocketQueue:
     async def send(self, message):
         self.queue.put(message)
 
-    # def __hash__(self):
-    #     return hash(self.lock) + hash(self.ws)
-
 
 class ApiClient:
 
