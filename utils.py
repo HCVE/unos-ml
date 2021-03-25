@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import importlib
 import json
@@ -6,9 +5,11 @@ import logging
 import math
 import os
 import random
+import re
 import time
 import timeit
 import warnings
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from functools import partial
 from functools import singledispatch
@@ -16,21 +17,28 @@ from pathlib import Path
 from typing import List, Dict, Any, Iterable, Tuple, Callable, Optional, TypeVar, Union, Iterator
 from typing import Mapping
 
+import joblib
 import numpy as np
 import pandas
 import psutil
+import subprocess
+
+from frozendict import frozendict
+from miceforest import MultipleImputedKernel
 from numpy import linspace
 from pandas import DataFrame
 from pandas import Series
+from scipy.sparse import csr_matrix
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from statsmodels.compat.pandas import assert_frame_equal, assert_series_equal
-from toolz import pluck
-from objsize import get_deep_size
-
+from toolz import pluck, keyfilter
+# noinspection PyUnresolvedReferences
+import swifter
 from arguments import get_params
-from functional import try_except, statements, raise_exception, pipe, flatten, find_index, t
+from cache import memory
+from functional import statements, raise_exception, find_index, pipe
 
 T1 = TypeVar('T1')
 T2 = TypeVar('T2')
@@ -144,7 +152,7 @@ def _2(obj: Series):
 
 @object2dict.register  # mypy: ignore
 def _3(obj: dict):
-    return {key: object2dict(item) for key, item in obj.items()}
+    return {key: object2dict(item) for key, item in obj.items() if not key.startswith('__')}
 
 
 def get_class_attributes(cls: Any) -> List[str]:
@@ -167,7 +175,11 @@ def transpose_dicts(input_dict: Dict[Any, Dict]) -> Dict[Any, Dict]:
     except StopIteration:  # Length of 0
         return {}
 
-    return {key: {key2: value2[key] for key2, value2 in input_dict.items()} for key in first_item.keys()}
+    return {
+        key: {key2: value2[key]
+              for key2, value2 in input_dict.items()}
+        for key in first_item.keys()
+    }
 
 
 def transpose_list(input_list: List[List]) -> List[List]:
@@ -233,28 +245,42 @@ def to_json(obj: Any) -> str:
 
 
 def evaluate_and_assign_if_not_present(
-        data: Dict,
-        key: str,
-        callback: Callable[[], T1],
-        was_not_present_callback: Callable[[T1], None] = None,
-        catch_exception: bool = False,
-        force_execute: bool = False
+    data: Union[Mapping, Callable],
+    key: str,
+    callback: Callable[[], T1],
+    was_not_present_callback: Callable[[T1], None] = None,
+    catch_exception: bool = False,
+    force_execute: bool = False
 ) -> None:
-    if key not in data or force_execute:
+
+    if isinstance(data, Callable):
+        fetched_data = data()
+    else:
+        fetched_data = data
+
+    if key not in fetched_data or force_execute:
+        logging.info(key.upper())
         logging.debug(f'Key "{key}" not present, executing callback')
         timer = Timer()
 
-        if catch_exception:
-            # noinspection PyBroadException
-            try:
-                output = callback()
-            except Exception as e:
-                logging.error(e)
-                output = None
-        else:
-            output = callback()
+        try:
+            fetched_data.close()
+        except AttributeError:
+            pass
 
-        data[key] = output
+        output = callback()
+
+        if isinstance(data, Callable):
+            fetched_data = data()
+        else:
+            fetched_data = data
+
+        fetched_data[key] = output
+
+        try:
+            fetched_data.close()
+        except AttributeError:
+            pass
 
         if was_not_present_callback:
             was_not_present_callback(data)
@@ -358,9 +384,9 @@ def load_data(file_name: str) -> Any:
 
 
 def extract_features_and_label(
-        data,
-        label: Optional[str] = None,
-        features: Optional[List[str]] = None,
+    data,
+    label: Optional[str] = None,
+    features: Optional[List[str]] = None,
 ) -> Tuple[DataFrame, Optional[Series]]:
     if label:
         label_capitalized = label.upper()
@@ -486,45 +512,75 @@ def series_count_na(series: Series) -> int:
 
 
 def use_df_fn(
-        function: Callable,
-        data_frame: DataFrame,
-        *args,
-        reuse_columns=True,
-        reuse_index=True,
-        columns: Optional[List] = None,
-        **kwargs
+    input_data_frame: DataFrame,
+    output_data: Any,
+    reuse_columns=True,
+    reuse_index=True,
+    columns: Optional[List] = None,
 ) -> DataFrame:
     df_arguments = {}
 
     if reuse_columns:
-        df_arguments['columns'] = c if (c := data_frame.columns) is not None else columns
+        df_arguments['columns'] = columns if columns is not None else input_data_frame.columns
 
     if reuse_index:
-        df_arguments['index'] = data_frame.index
+        df_arguments['index'] = input_data_frame.index
 
-    return DataFrame(function(data_frame, *args, **kwargs), **df_arguments)
+    if isinstance(output_data, csr_matrix):
+        output_data = output_data.toarray()
+
+    return DataFrame(output_data, **df_arguments)
 
 
-def use_df(estimator_class, columns=None):
-    class WrappedEstimator(estimator_class):
-        def transform(self, X):
+class DFWrapped:
+
+    def get_feature_names(self):
+        try:
+            return super().get_feature_names()
+        except AttributeError:
+            return self.columns
+
+    def _get_columns(self, X: DataFrame, X_out: DataFrame = None):
+        try:
+            return self.get_feature_names()
+        except AttributeError:
             try:
-                return use_df_fn(super().transform, X, columns=columns)
+                return X_out.columns
             except AttributeError:
-                return X
+                try:
+                    return X.columns
+                except AttributeError:
+                    raise Exception(
+                        'Cannot produce DataFrame with named columns: columns are not defined'
+                    )
 
-        def fit_transform(self, X, y):
-            try:
-                super().fit_transform
-            except AttributeError:
-                return super().fit(X, y)
-            else:
-                return use_df_fn(super().fit_transform, X, y, columns=columns)
+    def transform(self, X, *args, **kwargs):
+        try:
+            X_out = super().transform(X, *args, **kwargs)
+            self.columns = self._get_columns(X, X_out)
+            return use_df_fn(X, X_out, columns=self.columns)
+        except AttributeError:
+            return X
 
-        def fit_predict(self, X, y):
-            return use_df_fn(super().fit_predict, X, y, columns=columns)
+    def fit_transform(self, X, y=None, *args, **kwargs):
+        try:
+            super().fit_transform
+        except AttributeError:
+            return super().fit(X, y, *args, **kwargs)
+        else:
+            X_out = super().fit_transform(X, y, *args, **kwargs)
+            self.columns = self._get_columns(X, X_out)
+            return use_df_fn(X, X_out, columns=self.columns)
 
-    return WrappedEstimator
+    def fit_predict(self, X, y, *args, **kwargs):
+        X_out = super().fit_predict(X, y, *args, **kwargs)
+        self.columns = self._get_columns(X, X_out)
+        return use_df_fn(X, X_out, columns=self.columns)
+
+    def fit(self, X, y, *args, **kwargs):
+        self.columns = self._get_columns(X)
+        super().fit(X, y, *args, **kwargs)
+        return self
 
 
 def series_count_inf(series: Series) -> int:
@@ -579,19 +635,6 @@ def with_default(value: T1, default: T2) -> Union[T1, T2]:
     return value if value is not None else default
 
 
-class Transform(BaseEstimator, TransformerMixin):
-
-    def __init__(self, callback: Callable):
-        self.callback = callback
-        super().__init__()
-
-    def transform(self, X):
-        return self.callback(X)
-
-    def fit(self, X, y=None, **fit_params):
-        return self
-
-
 def preliminary_analysis_column(input_data: Series) -> None:
     types = [type(index) for index in input_data.value_counts().index]
     descriptive_df = DataFrame({
@@ -606,13 +649,32 @@ def inverse_binary_y(y: Series) -> Series:
     return 1 - y
 
 
+class Print(BaseEstimator, TransformerMixin):
+
+    def __init__(
+        self,
+        what,
+    ):
+        super()
+        self.what = what
+
+    def transform(self, X, *args, **kwargs):
+        print(self.what)
+        return X
+
+    def fit(self, *args, **kwargs):
+        return self
+
+
 class Debug(BaseEstimator, TransformerMixin):
 
     def __init__(
-            self,
-            fit_callback: Callable[[DataFrame], Any] = None,
-            transform_callback: Callable[[DataFrame], Any] = None,
+        self,
+        fit_callback: Callable[[DataFrame], Any] = None,
+        transform_callback: Callable[[DataFrame], Any] = None,
+        set_breakpoint_fit: bool = False,
     ):
+        self.set_breakpoint_fit = set_breakpoint_fit
         self.fit_callback = fit_callback
         self.transform_callback = transform_callback
         super()
@@ -620,11 +682,18 @@ class Debug(BaseEstimator, TransformerMixin):
     def transform(self, X):
         if self.transform_callback:
             self.transform_callback(X)
+        else:
+            print('transform', X)
         return X
 
+    # noinspection PyUnusedLocal
     def fit(self, X, y=None, **fit_params):
         if self.fit_callback:
             self.fit_callback(X)
+        else:
+            print('fit', X)
+        if self.set_breakpoint_fit:
+            breakpoint()
         return self
 
 
@@ -638,7 +707,8 @@ def balanced_range(start: int, end: int, count: int = None) -> Iterable:
     return (round(n) for n in linspace(end - 1, start, count))
 
 
-def get_ilocs_by_callback(row_callback: Callable[[Series], bool], data_frame: DataFrame) -> Iterator[int]:
+def get_ilocs_by_callback(row_callback: Callable[[Series], bool],
+                          data_frame: DataFrame) -> Iterator[int]:
     return (nr for nr, (_, row) in enumerate(data_frame.iterrows()) if row_callback(row))
 
 
@@ -646,6 +716,10 @@ def map_index(callback: Callable, data_frame: DataFrame) -> DataFrame:
     data_frame_new = data_frame.copy()
     data_frame_new.index = list(map(callback, list(data_frame.index)))
     return data_frame_new
+
+
+def map_columns(callback: Callable, data_frame: DataFrame) -> DataFrame:
+    return data_frame.rename(callback, axis=1)
 
 
 class Timer:
@@ -738,11 +812,12 @@ def compress_data_frame(input_dataframe: DataFrame) -> DataFrame:
 
 def get_feature_subset(features: Iterable[str], data_frame: DataFrame) -> DataFrame:
     real_features = [
-        feature if (feature in data_frame.columns) else (statements(
-            log_feature := f'log_{feature}',
-            log_feature if log_feature in data_frame.columns
-            else raise_exception(KeyError(f'Feature {feature} not present'))
-        )) for feature in features
+        feature if (feature in data_frame.columns) else (
+            statements(
+                log_feature := f'log_{feature}', log_feature if log_feature in data_frame.columns
+                else raise_exception(KeyError(f'Feature {feature} not present'))
+            )
+        ) for feature in features
     ]
     return data_frame[real_features]
 
@@ -751,7 +826,8 @@ def append_to_pipeline(after_key: str, what: Tuple[str, Any], pipeline: Pipeline
     return type(pipeline)(steps=append_to_tuples(after_key, what, pipeline.steps))
 
 
-def append_to_tuples(after_key: str, what: Any, tuples: List[Tuple[str, Any]]) -> List[Tuple[str, Any]]:
+def append_to_tuples(after_key: str, what: Any, tuples: List[Tuple[str,
+                                                                   Any]]) -> List[Tuple[str, Any]]:
     print(tuples)
     index = find_index(lambda pair: pair[0] == after_key, tuples)
     tuples_new = tuples.copy()
@@ -770,3 +846,140 @@ def encode_dict_to_params(input_dict: Mapping[str, Mapping[str, Any]]) -> Mappin
             output_dict[key1] = value1
 
     return output_dict
+
+
+def remove_newlines(value: str) -> str:
+    return re.sub('\\\\n', '', value)
+
+
+def execute(command: List[str]) -> Any:
+    return subprocess.run(command, stdout=subprocess.PIPE).stdout
+
+
+def compute_matrix_from_columns(
+    input_df: DataFrame, callback: Callable, remove_na: bool = True
+) -> DataFrame:
+    output_data = OrderedDict.fromkeys(input_df.columns)
+
+    for feature1_name, feature_1_series in input_df.items():
+        output_data[feature1_name] = OrderedDict.fromkeys(input_df.columns)
+
+        for feature2_name, feature_2_series in input_df.items():
+
+            if remove_na:
+                mask = ~feature_1_series.isna() & ~feature_2_series.isna()
+            else:
+                mask = [True] * len(feature_1_series)
+
+            output_data[feature1_name][feature2_name] = callback(
+                feature_1_series[mask], feature_2_series[mask]
+            )
+
+    return DataFrame(output_data, columns=input_df.columns, index=input_df.columns)
+
+
+def get_dtype_outliers(series: Series) -> List[Tuple[str, str]]:
+    types = series.swifter.progress_bar(False).apply(lambda value: type(value))
+    return types.value_counts().iloc[1:]
+
+
+def df_matrix_to_pairs(data_frame: DataFrame) -> DataFrame:
+    output = {key: [] for key in ('x', 'y', 'value')}
+
+    for column1 in data_frame.columns:
+        for column2 in data_frame.columns:
+            output['x'].append(column1)
+            output['y'].append(column2)
+            output['value'].append(data_frame.loc[column1][column2])
+
+    return DataFrame(output)
+
+
+from memoization import cached
+
+
+def fit_mice_hash(X: DataFrame, iterations: int = 1):
+    return joblib.hash(X)
+
+
+def fit_mice_execute(X: DataFrame, iterations: int = 1) -> Any:
+    kernel = MultipleImputedKernel(X, save_all_iterations=True, datasets=1)
+    kernel.mice(iterations, verbose=True)
+    return kernel
+
+
+fit_mice_execute_cached = memory.cache(fit_mice_execute)
+
+
+def fit_mice_memory_cached_(X: DataFrame, iterations: int = 1) -> Any:
+    print('MICE cache miss')
+    return fit_mice_execute(X, iterations)
+
+
+fit_mice_execute_memory_cached = cached(fit_mice_memory_cached_, custom_key_maker=fit_mice_hash)
+
+
+class MiceForest(BaseEstimator, TransformerMixin):
+
+    def __init__(self, iterations: int = 1):
+        self.kernel = None
+        self.iterations = iterations
+
+    def fit(self, X, y=None, **fit_params):
+        self.kernel = fit_mice_execute_memory_cached(X)
+        return self
+
+    def transform(self, X, y=None):
+        print('MICE transforming')
+        data = self.kernel.impute_new_data(X).complete_data(self.iterations)
+        return data
+
+
+@singledispatch
+def data_subset_iloc(data_frame: DataFrame, subset_index: List[int]) -> DataFrame:
+    return data_frame.iloc[subset_index]
+
+
+@data_subset_iloc.register(Series)
+def data_subset_iloc_(data_frame: Series, subset_index: List[int]) -> Series:
+    return data_frame.iloc[subset_index]
+
+
+@data_subset_iloc.register
+def data_subset_iloc_(data_frame: np.recarray, subset_index: List[int]) -> np.recarray:
+    return data_frame[subset_index]
+
+
+def get_feature_indexes_by_names(
+    all_features: List[str],
+    selected_features: List[str],
+) -> List[int]:
+    return [all_features.index(selected_feature) for selected_feature in selected_features]
+
+
+def remove_prefix(prefix: str, input_str: str) -> str:
+    if input_str.startswith(prefix):
+        return input_str[len(prefix):]
+    else:
+        return input_str[:]
+
+
+def remove_suffix(suffix: str, input_str: str) -> str:
+    # suffix='' should not call self[:-0].
+    if suffix and input_str.endswith(suffix):
+        return input_str[:-len(suffix)]
+    else:
+        return input_str[:]
+
+
+def mapping_subset(keys: Iterable[str], input_mapping: Mapping) -> Mapping:
+    return pipe(
+        input_mapping,
+        partial(keyfilter, lambda key: key in keys)
+    )
+
+empty_dict: Mapping = frozendict()
+
+if __name__ == '__main__':
+    t: Series = data_subset_iloc(Series([1, 2]), [0])
+    print(t)

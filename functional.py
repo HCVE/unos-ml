@@ -20,6 +20,7 @@ def or_fn(*fns: Callable[..., bool]) -> Callable[..., bool]:
 
 
 def decorate_unpack(function: Callable[..., T1]) -> Callable[[Iterable], T1]:
+
     def unpacked(args):
         return function(*args)
 
@@ -74,7 +75,7 @@ def find(callback: Callable[[T1], bool], list_to_search: Iterable[T1]) -> T1:
 
 
 def find_index(
-        callback: Callable[[T1], bool], list_to_search: Union[List[T1], str], reverse=False
+    callback: Callable[[T1], bool], list_to_search: Union[List[T1], str], reverse=False
 ) -> int:
     if reverse:
         iterable = add_index_reversed(list_to_search)
@@ -98,6 +99,7 @@ def do_nothing():
 
 
 def pass_value() -> Callable[[T1], T1]:
+
     def pass_value_callback(value):
         return value
 
@@ -111,6 +113,7 @@ def in_ci(string: str, sequence: Union[List, str]) -> bool:
 
 
 def partial_method(method: Callable, *args, **kwargs) -> Callable:
+
     def partial_callback(self: object):
         method(self, *args, **kwargs)
 
@@ -222,3 +225,14 @@ def does_objects_equal(obj1: Any, obj2: Any) -> bool:
 
 def raise_exception(exception: Any) -> None:
     raise exception
+
+
+def compact(iterable: Iterable) -> Iterable:
+    return filter(lambda i: i is not None, iterable)
+
+
+def tap(callback: Callable[[T1], None]) -> Callable[[T1], T1]:
+    def tap_callback(arg: T1) -> T1:
+        callback(arg)
+        return arg
+    return tap_callback

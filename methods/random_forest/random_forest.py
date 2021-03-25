@@ -21,8 +21,8 @@ from hyperopt import hp
 
 
 async def run(
-        *args,
-        **kwarg,
+    *args,
+    **kwarg,
 ):
     await run_generic(
         RandomForestMethod.get_pipeline, get_parameter_space=get_parameter_space, *args, **kwarg
@@ -30,8 +30,8 @@ async def run(
 
 
 async def run_training_curve(
-        *args,
-        **kwargs,
+    *args,
+    **kwargs,
 ):
     await run_training_curve_generic(RandomForestMethod.get_pipeline, *args, **kwargs)
 
@@ -91,14 +91,18 @@ class RandomForestMethod(Method):
     def get_hyperopt_space():
         return hp.choice(
             'base', [
-                {'classifier': {
-                    'bootstrap': hp.choice('classifier_bootstrap', [True, False]),
-                    'max_depth': scope.int(hp.quniform('max_depth', 2, 16, 1)),
-                    'max_features': hp.choice('classifier_max_features', ['auto', 'log2', None]),
-                    'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 20, 1)),
-                    'min_samples_split': scope.int(hp.quniform('min_samples_split', 2, 20, 1)),
-                    'n_estimators': scope.int(hp.uniform('classifier__n_estimators', 5, 500)),
-                }}
+                {
+                    'classifier': {
+                        'bootstrap': hp.choice('classifier_bootstrap', [True, False]),
+                        'max_depth': scope.int(hp.quniform('max_depth', 2, 100, 1)),
+                        'max_features': hp.choice(
+                            'classifier_max_features', ['auto', 'log2', None]
+                        ),
+                        'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 20, 1)),
+                        'min_samples_split': scope.int(hp.quniform('min_samples_split', 2, 20, 1)),
+                        'n_estimators': scope.int(hp.uniform('classifier__n_estimators', 5, 500)),
+                    }
+                }
             ]
         )
 
@@ -108,8 +112,11 @@ class RandomForestMethod(Method):
             [
                 ('onehot', None),
                 ('imputer', None),
-                ('upsampler', None),
-                ("classifier", RandomForestClassifier(n_jobs=1)),
+                ('upsampler', RandomOverSampler()),
+                (
+                    "classifier",
+                    RandomForestClassifier(n_jobs=20)
+                ),
             ],
         )
         return classifier

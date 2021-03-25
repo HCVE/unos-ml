@@ -111,6 +111,7 @@ class ClassificationMetrics(DataStructure):
     roc_auc: float
     average_precision: float
     balanced_accuracy: float
+    brier_score: float
     npv: float
 
 
@@ -123,9 +124,9 @@ class RegressionMetrics(DataStructure):
 
 @dataclass(repr=False)
 class RegressionMetricsWithSTD(DataStructure):
-    explained_variance: [float, float]
-    r2: [float, float]
-    mean_absolute_error: [float, float]
+    explained_variance: Tuple[float, float]
+    r2: Tuple[float, float]
+    mean_absolute_error: Tuple[float, float]
 
 
 @dataclass(repr=False)
@@ -141,6 +142,7 @@ class ClassificationMetricsWithSTD(DataStructure):
     roc_auc: Optional[Tuple[float, float]] = None
     average_precision: Optional[Tuple[float, float]] = None
     balanced_accuracy: Optional[float] = None
+    brier_score: Optional[Tuple[float, float]] = None
 
 
 @dataclass

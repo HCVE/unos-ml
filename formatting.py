@@ -2,15 +2,16 @@ import textwrap
 from dataclasses import dataclass
 from functools import partial, singledispatch
 from numbers import Real
-from typing import Any, List, Dict, Tuple, Callable, Iterable, Mapping, Union, cast, TypeVar
+from typing import Any, List, Dict, Tuple, Callable, Iterable, Mapping, Union, cast, TypeVar, Set
 
 from pandas import Series, DataFrame
 from pyramda import keys
 from tabulate import tabulate
+from toolz import identity
 from toolz.curried import get, pluck, map
 
 from custom_types import ClassificationMetricsWithStatistics, ClassificationMetrics, GenericConfusionMatrix
-from functional import flatten, pipe, find_index
+from functional import flatten, pipe, find_index, compact
 from utils import get_class_attributes, get_tabulate_format, load_dictionary, get_feature_category
 
 ALL_METRICS = get_class_attributes(ClassificationMetrics)
@@ -47,6 +48,12 @@ def b(text: str) -> None:
     display((HTML(f'<b>{text}</b>')))
 
 
+def p(text: str) -> None:
+    from IPython.core.display import display, HTML
+    # noinspection PyTypeChecker
+    display((HTML(f'<p>{text}</b>')))
+
+
 def format_confidence_interval(m, interval):
     return str(round(m, 3)) + f' ({round(interval[0], 3)}—{round(interval[1], 3)})'
 
@@ -72,7 +79,7 @@ def format_p_value(fraction: float, max_digits: int = 4, min_digits=2) -> str:
             str_fraction,
         )
         output = str(fraction)
-        order_correction = 10 ** (non_zero_index + (2 - min_digits))
+        order_correction = 10**(non_zero_index + (2 - min_digits))
         output = str(round(float(output) * order_correction) / order_correction)
         output = str(round(float(output), max_digits))
         return output + ("0" if len(output) == 3 else "")
@@ -123,12 +130,13 @@ def format_metric_short(metric: str) -> str:
     try:
         return {
             'balanced_accuracy': 'BACC',
-            'roc_auc': 'ROC/AUC',
+            'roc_auc': 'ROC AUC',
             'recall': 'TPR',
             'precision': 'PREC',
             'fpr': 'FPR',
             'tnr': 'TNR',
             'average_precision': 'AP',
+            'brier_score': 'Brier',
         }[metric]
     except KeyError:
         return metric
@@ -143,21 +151,36 @@ def format_method_nice(method: str) -> str:
 
 
 def compare_metrics_in_table(
-        metrics_for_methods: Dict[str, ClassificationMetricsWithStatistics],
-        include: Tuple[str, ...] = ('balanced_accuracy', 'roc_auc', 'recall', 'fpr'),
-        include_ci: bool = False,
+    metrics_for_methods: Dict[str, ClassificationMetricsWithStatistics],
+    include: Tuple[str, ...] = ('balanced_accuracy', 'roc_auc', 'recall', 'fpr'),
+    format_method_name: Callable[[str], str] = identity,
+    include_ci_for: Set[str] = None,
+    include_delta: bool = False,
 ) -> List[List]:
-    def get_line(method: str, metrics: Union[ClassificationMetrics, ClassificationMetricsWithStatistics]):
+
+    if include_ci_for is None:
+        include_ci_for = include
+
+    def get_line(
+        method: str, metrics: Union[ClassificationMetrics, ClassificationMetricsWithStatistics]
+    ):
         return [
-            method,
-            *flatten([
+            format_method_name(method),
+            *pipe(
                 [
-                    metrics[metric].mean,
-                    metrics[metric].mean - get_max_metric_value(metric, metrics_for_methods.values()),
-                ] + ([format_ci(metrics[metric].ci)] if include_ci else [])
-                for metric in include
-            ]
-            )]
+                    [
+                        metrics[metric].mean,
+                        (
+                            metrics[metric].mean -
+                            get_max_metric_value(metric, metrics_for_methods.values())
+                        ) if include_delta else None,
+                    ] + ([format_ci(metrics[metric].ci)] if metric in include_ci_for else [])
+                    for metric in include
+                ],
+                flatten,
+                compact,
+            ),
+        ]
 
     lines = pipe(
         [get_line(method, metrics) for method, metrics in metrics_for_methods.items()],
@@ -167,21 +190,30 @@ def compare_metrics_in_table(
     return format_structure(
         format_decimal,
         [
-            ['', *flatten(
-                map(lambda metric: [format_metric_short(metric), 'Δ'] + (['CI'] if include_ci else []), include))],
+            [
+                '', *flatten(
+                    map(
+                        lambda metric:
+                        [format_metric_short(metric), *(['Δ'] if include_delta else [])] +
+                        (['95% CI'] if metric in include_ci_for else []), include
+                    )
+                )
+            ],
             *lines,
         ],
     )
 
 
-def get_max_metric_value(metric: str, results: Iterable[ClassificationMetricsWithStatistics]) -> Real:
+def get_max_metric_value(
+    metric: str, results: Iterable[ClassificationMetricsWithStatistics]
+) -> Real:
     return max(metrics[metric].mean for metrics in results)
 
 
 def format_end_to_end_metrics_table(
-        optimized_metrics_by_method: Dict[str, ClassificationMetricsWithStatistics],
-        default_metrics_by_method: Dict[str, ClassificationMetricsWithStatistics],
-        include_header: bool = True,
+    optimized_metrics_by_method: Dict[str, ClassificationMetricsWithStatistics],
+    default_metrics_by_method: Dict[str, ClassificationMetricsWithStatistics],
+    include_header: bool = True,
 ) -> List[List[str]]:
     methods = keys(optimized_metrics_by_method)
 
@@ -213,8 +245,8 @@ def format_end_to_end_metrics_table(
 
 
 def format_single_threshold_table(
-        metrics_by_method: Dict[str, ClassificationMetricsWithStatistics],
-        include_header: bool = True,
+    metrics_by_method: Dict[str, ClassificationMetricsWithStatistics],
+    include_header: bool = True,
 ) -> List[List[str]]:
     methods = keys(metrics_by_method)
 
@@ -295,8 +327,8 @@ def render_struct_table(table: List[List]) -> str:
     return output + "</table>"
 
 
-def dict_to_table_horizontal(dictionary: Mapping) -> str:
-    return tabulate([[key, value] for key, value in dictionary.items()], **get_tabulate_format())
+def dict_to_table_horizontal(dictionary: Mapping) -> List[List]:
+    return [[key, value] for key, value in dictionary.items()]
 
 
 def dict_to_table_vertical(dictionary: Dict, digits: int = None) -> str:
@@ -326,7 +358,7 @@ def confusion_matrix_to_table(matrix: GenericConfusionMatrix) -> List[List]:
     ]
 
 
-def format_feature_short_readable(identifier: str) -> str:
+def format_feature_short(identifier: str) -> str:
     try:
         return {
             'EM': 'e\'',
@@ -360,6 +392,7 @@ def format_feature_short_readable(identifier: str) -> str:
             'LVMI': 'LV mass',
             'SV_MODI': 'LV stroke volume',
             'LA_EF_4CH': 'LA EF',
+            'LA_A_4CH': 'LA area ch. 4ch',
             'ESV_MODI': 'LV ESVi',
             'MV_DECT': 'MV dec. time',
             'EF_MOD': 'LV EF',
@@ -389,7 +422,7 @@ def format_feature_medium_readable(identifier: str) -> str:
             'LA_A_4CH': 'LA area change (4ch)',
         }[str(identifier).upper()]
     except KeyError:
-        return format_feature_short_readable(identifier)
+        return format_feature_short(identifier)
 
 
 @dataclass
@@ -451,9 +484,9 @@ def compute_and_format_percents(amount: Union[float, int], amount_from: Union[fl
     return f'{(amount / amount_from) * 100:.2f}%'
 
 
-def format_columns_df(data_frame: DataFrame) -> DataFrame:
+def format_columns_df(data_frame: DataFrame, callback: Callable) -> DataFrame:
     data_frame_copy = data_frame.copy()
-    data_frame_copy.columns = [format_feature_detailed(column) for column in data_frame_copy]
+    data_frame_copy.columns = [callback(column) for column in data_frame_copy]
     return data_frame_copy
 
 

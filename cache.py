@@ -4,8 +4,11 @@ import pickle
 from joblib import Memory
 from portalocker import Lock
 
-memory = Memory('./temporary/cache_1', verbose=0)
-memory_l2 = Memory('./temporary/cache_2', verbose=0)
+memory = Memory('./temporary/cache_1', verbose=2)
+
+
+def get_memory(identifier: str, verbose: int = 0) -> Memory:
+    return Memory(f'./temporary/cache/{identifier}', verbose=verbose)
 
 
 def get_file_name(identifier: str) -> str:

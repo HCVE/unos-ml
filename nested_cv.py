@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from datetime import timedelta
 from functools import partial
 from multiprocessing import Process
-from typing import Any, List, Callable, Dict, TypedDict, Optional, Tuple, Iterable
+from typing import Any, List, Callable, Dict, TypedDict, Optional, Tuple, Iterable, Mapping
 
 from functional_pipeline import pipeline
 from hyperopt import fmin, tpe, STATUS_OK, Trials, atpe
@@ -22,7 +22,7 @@ from toolz.curried import map, get_in
 from api.api_utils import json_deserialize_types
 from cache import save_data, load_data
 from utils import log, load_global_config, Timer, Counter, hash_dict, list_of_dicts_to_dict_of_lists, dict_mean, \
-    call_and_push_to_queue
+    call_and_push_to_queue, empty_dict
 from custom_types import SupervisedPayload, ClassificationMetricsWithSTD, Estimator
 from evaluation_functions import result_from_fold_results, cross_validate_model_sets_args, \
     compute_classification_metrics_folds, cross_validate_model_fold_args, ModelCVResult, get_classification_metrics, \
@@ -84,8 +84,8 @@ def get_protocols():
         'default_rf_top_features': {
             'features': [
                 'TRGL', 'SOCK', 'SK', 'K', 'SCRT', 'LFERR', 'LPRA', 'BSUG', 'QTCD', 'BW', 'LCRTSL',
-                'SKINF', 'WHR', 'MBP', 'WAISTC', 'DBP', 'RA1_V5', 'LLEPT', 'TA_AVG', 'HHT', 'RA1_AVL',
-                'BMI', 'SBP', 'PP', 'AGE'
+                'SKINF', 'WHR', 'MBP', 'WAISTC', 'DBP', 'RA1_V5', 'LLEPT', 'TA_AVG', 'HHT',
+                'RA1_AVL', 'BMI', 'SBP', 'PP', 'AGE'
             ],
             'random_state': 454,
             'outer_cv': 10,
@@ -98,8 +98,8 @@ def get_protocols():
         'default_xgboost_top_features': {
             'features': [
                 'HCHOL', 'BW', 'LGGT', 'MBP', 'TRT_CEB', 'SNA', 'LCRTSL', 'RBC', 'K', 'QTCD', 'SUA',
-                'SEX', 'RA1_V5', 'HGB', 'RA1_AVL', 'SBP', 'TRT_DD', 'TA_AVG', 'LLEPT', 'PP', 'WAISTC',
-                'BMI', 'SOCK', 'HHT', 'AGE'
+                'SEX', 'RA1_V5', 'HGB', 'RA1_AVL', 'SBP', 'TRT_DD', 'TA_AVG', 'LLEPT', 'PP',
+                'WAISTC', 'BMI', 'SOCK', 'HHT', 'AGE'
             ],
             'random_state': 454,
             'outer_cv': 10,
@@ -112,8 +112,8 @@ def get_protocols():
         'inner_10_xgboost_top_features': {
             'features': [
                 'HCHOL', 'BW', 'LGGT', 'MBP', 'TRT_CEB', 'SNA', 'LCRTSL', 'RBC', 'K', 'QTCD', 'SUA',
-                'SEX', 'RA1_V5', 'HGB', 'RA1_AVL', 'SBP', 'TRT_DD', 'TA_AVG', 'LLEPT', 'PP', 'WAISTC',
-                'BMI', 'SOCK', 'HHT', 'AGE'
+                'SEX', 'RA1_V5', 'HGB', 'RA1_AVL', 'SBP', 'TRT_DD', 'TA_AVG', 'LLEPT', 'PP',
+                'WAISTC', 'BMI', 'SOCK', 'HHT', 'AGE'
             ],
             'random_state': 454,
             'outer_cv': 10,
@@ -167,9 +167,9 @@ def get_protocols():
 
 
 def evaluate_repeated_nested_cross_validation(
-        get_pipeline,
-        get_parameter_space,
-        payload: SupervisedPayload,
+    get_pipeline,
+    get_parameter_space,
+    payload: SupervisedPayload,
 ) -> List[ModelCVResult]:
     outer_cv = 10
     inner_cv = 10
@@ -410,7 +410,13 @@ class ReturnHyperParameters(ABC):
 
 class BayesianOptimization(ReturnHyperParameters):
 
-    def __init__(self, space: Any, iterations: int = 100, target_metric='roc_auc', return_trials: bool = False):
+    def __init__(
+        self,
+        space: Any,
+        iterations: int = 100,
+        target_metric='roc_auc',
+        return_trials: bool = False
+    ):
         self.space = space
         self.target_metric = target_metric
         self._iterations = iterations
@@ -421,6 +427,7 @@ class BayesianOptimization(ReturnHyperParameters):
         return self._iterations
 
     def get(self, objective: ObjectiveFunction) -> ObjectiveFunctionResultWithPayload:
+
         def objective_wrapped(configuration: Configuration) -> Dict:
             objective_result: ObjectiveFunctionResult = objective(configuration)
             return {
@@ -439,7 +446,7 @@ class BayesianOptimization(ReturnHyperParameters):
             algo=atpe.suggest,
             verbose=True,
             max_evals=self.iterations,
-            show_progressbar=False,
+            show_progressbar=True,
         )
         best_item = sorted(
             trials.results,
@@ -447,8 +454,7 @@ class BayesianOptimization(ReturnHyperParameters):
         )[0]
 
         return ObjectiveFunctionResultWithPayload(
-            chosen=best_item['payload'],
-            payload=trials if self.return_trials else None
+            chosen=best_item['payload'], payload=trials if self.return_trials else None
         )
 
 
@@ -493,12 +499,12 @@ def is_protocol_nested(protocol: NestedEvaluationProtocol) -> bool:
 
 
 def evaluate_nested_cross_validation(
-        get_pipeline,
-        optimize: ReturnHyperParameters,
-        payload: SupervisedPayload,
-        protocol=None,
-        parallel: bool = True,
-        cache_key: Optional[str] = None,
+    get_pipeline,
+    optimize: ReturnHyperParameters,
+    payload: SupervisedPayload,
+    protocol=None,
+    parallel: bool = True,
+    cache_key: Optional[str] = None,
 ) -> List[ModelCVResult]:
     if protocol is None:
         protocol = NestedEvaluationProtocol(
@@ -553,8 +559,8 @@ def evaluate_nested_cross_validation(
     counter = Counter(
         int(
             ((dimensionality_total / protocol['outer_repeats']) * len(outer_repeats)) + (
-                    protocol['inner_cv'] * protocol['inner_repeats'] * optimize.iterations *
-                    len(outer_folds)
+                protocol['inner_cv'] * protocol['inner_repeats'] * optimize.iterations *
+                len(outer_folds)
             )
         )
     )
@@ -648,17 +654,19 @@ class SimpleEvaluationProtocol(TypedDict):
 
 
 def evaluate_method_on_sets(
-        get_pipeline,
-        X: DataFrame,
-        y: Series,
-        optimize: ReturnHyperParameters,
-        splits: Iterable[Tuple[List[int], List[int]]],
-        parallel: bool = True,
-        filter_X_test: Callable[[DataFrame], DataFrame] = identity,
-        feature_names: Optional[List[str]] = None,
-        get_metrics: Callable[[Series, ModelCVResult], Any] = get_classification_metrics,
-        n_jobs: int = 12,
+    get_pipeline,
+    X: DataFrame,
+    y: Series,
+    optimize: ReturnHyperParameters,
+    splits: Iterable[Tuple[List[int], List[int]]],
+    parallel: bool = True,
+    filter_X_test: Callable[[DataFrame], DataFrame] = identity,
+    feature_names: Optional[List[str]] = None,
+    get_metrics: Callable[[Series, ModelCVResult], Any] = get_classification_metrics,
+    n_jobs: int = 12,
+    fit_kwargs: Mapping = empty_dict,
 ) -> ObjectiveFunctionResultWithPayload:
+
     def evaluate_configuration(configuration: Configuration) -> ObjectiveFunctionResult:
         classifier = get_pipeline()
         classifier.set_params(**configuration_to_params(json_deserialize_types(configuration)))
@@ -672,6 +680,7 @@ def evaluate_method_on_sets(
             filter_X_test=filter_X_test,
             feature_names=feature_names,
             n_jobs=n_jobs,
+            fit_kwargs=fit_kwargs,
         )
         metrics = get_metrics(y, result)
 
@@ -690,7 +699,7 @@ def evaluate_method_on_sets(
 
 
 def get_cv_results_from_simple_cv_evaluation(
-        simple_cv_result: List[ObjectiveFunctionResultWithPayload]
+    simple_cv_result: List[ObjectiveFunctionResultWithPayload]
 ) -> List[ModelCVResult]:
     return mapl(lambda item: item['chosen']['result'], simple_cv_result)
 
@@ -698,7 +707,6 @@ def get_cv_results_from_simple_cv_evaluation(
 def get_outer_kfold(outer_cv, outer_repeat, stratified: bool):
     stratified_function = StratifiedKFold if stratified else KFold
     outer_k_fold = stratified_function(n_splits=outer_cv, shuffle=True, random_state=outer_repeat)
-
     return outer_k_fold
 
 
@@ -719,16 +727,16 @@ def get_metric_statistic(metric, outer_repeated_results):
 
 
 def nested_cv(
-        features,
-        label,
-        classifier,
-        inner_kfold_random_state,
-        dataset_index,
-        inner_cv,
-        dimensionality_total=None,
-        timer=None,
-        counter=None,
-        parallel=True
+    features,
+    label,
+    classifier,
+    inner_kfold_random_state,
+    dataset_index,
+    inner_cv,
+    dimensionality_total=None,
+    timer=None,
+    counter=None,
+    parallel=True
 ):
     nested_k_fold = KFold(n_splits=inner_cv, shuffle=True, random_state=inner_kfold_random_state)
     sets_index = list(nested_k_fold.split(dataset_index))
@@ -771,7 +779,9 @@ def get_best_inner_configuration(metric, y, configurations_by_repeat):
                 {
                     'configuration': results['payload']['configuration'],
                     'metrics': output_metrics(results['results'], y),
-                    'metrics_folds': compute_classification_metrics_folds(results['results']['y_scores'], y),
+                    'metrics_folds': compute_classification_metrics_folds(
+                        results['results']['y_scores'], y
+                    ),
                 } for results in configuration_results
             ]
             for configuration_hash, configuration_results in repeats_by_configuration.items()
@@ -801,12 +811,12 @@ def get_best_inner_configuration(metric, y, configurations_by_repeat):
 
 
 def optimize_and_train_cv(
-        get_pipeline: Callable[[], Estimator],
-        X: DataFrame,
-        y: Series,
-        optimize: ReturnHyperParameters,
-        protocol: Optional[SimpleEvaluationProtocol] = None,
-        parallel: bool = True,
+    get_pipeline: Callable[[], Estimator],
+    X: DataFrame,
+    y: Series,
+    optimize: ReturnHyperParameters,
+    protocol: Optional[SimpleEvaluationProtocol] = None,
+    parallel: bool = True,
 ) -> Estimator:
     if protocol is None:
         protocol = SimpleEvaluationProtocol(cv=10, repeats=1)
@@ -844,8 +854,8 @@ def info_elapsed(counter, dimensionality, timer):
         estimated_time = format_time(
             timedelta(
                 seconds=(
-                        (timer.elapsed_real() / counter_after_resume) *
-                        (dimensionality - counter_after_resume)
+                    (timer.elapsed_real() / counter_after_resume) *
+                    (dimensionality - counter_after_resume)
                 )
             )
         )

@@ -4,7 +4,7 @@ from functools import partial, reduce
 from multiprocessing.pool import Pool
 from statistics import mean, stdev, StatisticsError
 # noinspection Mypy
-from typing import Iterable, Optional, Any, Dict, Union, TypedDict, Callable, Tuple, TypeVar
+from typing import Iterable, Optional, Any, Dict, Union, TypedDict, Callable, Tuple, TypeVar, Mapping
 from typing import List
 
 import numpy as np
@@ -23,23 +23,24 @@ from sklearn import clone
 from sklearn.inspection import plot_partial_dependence
 from sklearn.metrics import precision_score, accuracy_score, roc_auc_score, \
     precision_recall_curve, roc_curve, f1_score, average_precision_score, balanced_accuracy_score, \
-    explained_variance_score, mean_absolute_error, r2_score
+    explained_variance_score, mean_absolute_error, r2_score, brier_score_loss
 from sklearn.model_selection import StratifiedKFold
 from sklearn.tree import export_text
 from toolz import curry, identity
 from toolz.curried import get, pluck, map, filter, valmap
 
 from cache import memory
-from utils import object2dict
+from utils import object2dict, data_subset_iloc, empty_dict
 from custom_types import Estimator, ClassificationMetrics, ClassificationMetricsWithSTD, ValueWithStatistics, \
     ClassificationMetricsWithStatistics, \
     DataStructure, ConfusionMatrix, ConfusionMatrixWithStatistics, Method, RegressionMetrics, RegressionMetricsWithSTD, \
     RegressionMetricsWithStatistics
+
 from formatting import dict_to_table_horizontal, format_method, tabulate_formatted, format_structure, format_decimal, \
     format_metric_short
-from functional import flatten, statements, find_index_right
+from functional import flatten, statements, find_index_right, try_except
 from functional import pass_args, mapl, pipe, decorate_unpack, find_index, unzip, add_index
-from statistics_functions import confidence_interval, get_dof
+from statistics_functions import confidence_interval, get_repeated_cv_corrected_dof
 from utils import get_object_attributes, ll, get_log_level, log, Timer
 
 DEFAULT_THRESHOLD = 0.5
@@ -109,17 +110,28 @@ def compute_regression_metrics(y_score, y_true) -> RegressionMetrics:
 
 
 def compute_classification_metrics(
-        y_score, y_true, threshold: float = DEFAULT_THRESHOLD, ignore_warning: bool = False
+    y_score,
+    y_true,
+    threshold: float = DEFAULT_THRESHOLD,
+    ignore_warning: bool = False
 ) -> ClassificationMetrics:
-    y_predict = y_score >= threshold
+    y_score_normalized = y_score.copy()
+    y_score_normalized[y_score_normalized < 0] = 0
+    y_score_normalized[y_score_normalized > 1] = 1
+
+    y_predict = y_score_normalized >= threshold
     y_true_masked = y_true.loc[y_predict.index]
-    roc = roc_curve(y_true_masked, y_score)
+    roc = roc_curve(y_true_masked, y_score_normalized)
     fpr, tpr = get_roc_point_by_threshold(threshold, *roc)
     npv = get_metrics_from_confusion_matrix(
-        get_confusion_from_threshold(y_true_masked, y_score, threshold)
+        get_confusion_from_threshold(y_true_masked, y_score_normalized, threshold)
     ).npv
 
-    precision = precision_score(y_true_masked, y_predict, **({'zero_division': 0} if ignore_warning else {}))
+    precision = precision_score(
+        y_true_masked, y_predict, **({
+            'zero_division': 0
+        } if ignore_warning else {})
+    )
 
     return ClassificationMetrics(
         recall=tpr,
@@ -129,22 +141,26 @@ def compute_classification_metrics(
         tnr=1 - fpr,
         fpr=fpr,
         fnr=1 - tpr,
-        average_precision=average_precision_score(y_true_masked, y_score),
+        average_precision=average_precision_score(y_true_masked, y_score_normalized),
         accuracy=accuracy_score(y_true_masked, y_predict),
-        roc_auc=roc_auc_score(y_true_masked, y_score),
+        roc_auc=roc_auc_score(y_true_masked, y_score_normalized),
         npv=npv,
+        brier_score=brier_score_loss(y_true_masked, y_score_normalized)
     )
 
 
 def compute_classification_metrics_folds(
-        y_scores: List[Series],
-        y: Series,
-        threshold: float = DEFAULT_THRESHOLD,
+    y_scores: List[Series],
+    y: Series,
+    threshold: float = DEFAULT_THRESHOLD,
 ) -> Optional[ClassificationMetricsWithSTD]:
     return pipeline(
         y_scores,
         [
-            map(lambda y_score: compute_classification_metrics(get_1_class_y_score(y_score), y, threshold)),
+            map(
+                lambda y_score:
+                compute_classification_metrics(get_1_class_y_score(y_score), y, threshold)
+            ),
             list,
             average_list_dicts_metric_std,
         ],
@@ -152,8 +168,8 @@ def compute_classification_metrics_folds(
 
 
 def compute_regression_metrics_folds(
-        y_scores: List[Series],
-        y: Series,
+    y_scores: List[Series],
+    y: Series,
 ) -> Optional[ClassificationMetricsWithSTD]:
     return pipeline(
         y_scores,
@@ -179,7 +195,9 @@ def average_list_dicts(metrics: List[Dict]) -> Optional[Dict]:
         values = list(
             map(lambda item: getattr(item, key) if hasattr(item, key) else item[key], metrics)
         )
+
         mean_value = mean(values)
+
         try:
             stdev_value = stdev(values)
         except StatisticsError:
@@ -202,16 +220,17 @@ def execute_model_predict_proba(classifier, X):
 
 
 def cross_validate_model(
-        X,
-        y,
-        classifier,
-        cv=10,
-        fast=False,
-        reduce=False,
-        parallel=True,
-        predict_proba=None,
-        n_jobs=12,
-        return_model: bool = True
+    X,
+    y,
+    classifier,
+    cv=10,
+    fast=False,
+    reduce=False,
+    parallel=True,
+    predict_proba=None,
+    n_jobs=12,
+    return_model: bool = True,
+    fit_kwargs: Dict = None,
 ) -> ModelCVResult:
     predict_proba = predict_proba or execute_model_predict_proba
     if not fast:
@@ -231,7 +250,15 @@ def cross_validate_model(
         pass
 
     return cross_validate_model_sets(
-        classifier, X, y, sets, predict_proba, parallel, n_jobs, return_model
+        classifier,
+        X,
+        y,
+        sets,
+        predict_proba,
+        parallel,
+        n_jobs,
+        return_model,
+        fit_kwargs=fit_kwargs,
     )
 
 
@@ -246,29 +273,32 @@ class WorkerInput(TypedDict):
     predict_proba: Callable[[Estimator, DataFrame], Series]
     feature_names: Optional[List[str]]
     return_model: bool
+    fit_kwargs: Mapping
 
 
 def cross_validate_model_sets(
-        classifier,
-        X,
-        y,
-        sets,
-        predict_proba=execute_model_predict_proba,
-        parallel=True,
-        n_jobs=12,
-        return_model: bool = True,
-        filter_X_test: Callable[[DataFrame], DataFrame] = identity,
-        feature_names: Optional[List[str]] = None,
+    classifier,
+    X,
+    y,
+    sets,
+    predict_proba=execute_model_predict_proba,
+    parallel=True,
+    n_jobs=12,
+    return_model: bool = True,
+    filter_X_test: Callable[[DataFrame], DataFrame] = identity,
+    feature_names: Optional[List[str]] = None,
+    fit_kwargs: Mapping = empty_dict,
 ) -> ModelCVResult:
     worker_input: List[WorkerInput] = [
         WorkerInput(
-            X_train=X.iloc[train],
-            y_train=y.iloc[train],
+            X_train=data_subset_iloc(X, train),
+            y_train=data_subset_iloc(y, train),
             X_test=filter_X_test(X.iloc[test]),
             classifier=classifier,
             predict_proba=predict_proba,
             return_model=return_model,
             feature_names=feature_names,
+            fit_kwargs=fit_kwargs,
         ) for (train, test) in sets
     ]
     if parallel:
@@ -284,7 +314,7 @@ cross_validate_model_sets_cached = memory.cache(cross_validate_model_sets, ignor
 
 
 def cross_validate_model_sets_args(
-        get_x_y, n_jobs=12, parallel=True, *args, **kwargs
+    get_x_y, n_jobs=12, parallel=True, *args, **kwargs
 ) -> ModelCVResult:
     X, y = get_x_y()
     return cross_validate_model_sets(X=X, y=y, n_jobs=n_jobs, parallel=parallel, *args, **kwargs)
@@ -298,47 +328,28 @@ cross_validate_model_sets_args_cached = memory.cache(
 def cross_validate_model_fold(chunk_input: WorkerInput) -> ModelResult:
     log("Execution fold", level=2)
     timer = Timer()
-    classifier = clone(chunk_input['classifier'])
+    classifier = chunk_input['classifier']
     X_train = chunk_input['X_train']
     y_train = chunk_input['y_train']
     X_test = chunk_input['X_test']
     return_model = chunk_input['return_model']
+
+    if get_log_level() == 1:
+        print(".")
 
     feature_names = \
         chunk_input['feature_names'] if \
             ('feature_names' in chunk_input and chunk_input['feature_names'] is not None) \
             else list(X_train.columns)
 
-    classifier.fit(
-        X_train,
-        y_train,
-    )
+    classifier.fit(X_train, y_train, **chunk_input['fit_kwargs'])
 
-    y_predict = Series(classifier.predict(X_test), index=X_test.index)
-    y_train_predict = Series(classifier.predict(X_train), index=X_train.index)
+    y_test_score_raw = classifier.predict_proba(X_test)
+    y_train_score_raw = classifier.predict_proba(X_train)
+    probability_columns = [f'y_predict_probabilities_{i}' for i in range(y_test_score_raw.shape[1])]
 
-    try:
-        y_predict_probabilities_raw = classifier.predict_proba(X_test)
-        y_train_predict_probabilities_raw = classifier.predict_proba(X_train)
-    except AttributeError:
-        y_predict_probabilities = y_predict
-        y_train_predict_probabilities = y_train_predict
-    else:
-        probability_columns = [
-            f'y_predict_probabilities_{i}' for i in range(y_predict_probabilities_raw.shape[1])
-        ]
-        y_predict_probabilities = DataFrame(
-            y_predict_probabilities_raw, index=X_test.index, columns=probability_columns
-        )
-        y_train_predict_probabilities = DataFrame(
-            y_train_predict_probabilities_raw, index=X_train.index, columns=probability_columns
-        )
-
-    if y_predict.dtype == np.float:
-        y_predict = y_predict \
-            .map(lambda v: 0 if v < 0 else v) \
-            .map(lambda v: 1 if v > 1 else v) \
-            .map(lambda v: round(v))
+    y_test_score = DataFrame(y_test_score_raw, index=X_test.index, columns=probability_columns)
+    y_train_score = DataFrame(y_train_score_raw, index=X_train.index, columns=probability_columns)
 
     try:
         feature_importance = Series(
@@ -352,7 +363,8 @@ def cross_validate_model_fold(chunk_input: WorkerInput) -> ModelResult:
             feature_importance = None
             logging.debug("No feature importance in the result")
         else:
-            feature_importance = Series(classifier[-1].coef_[0], index=feature_names)
+            # feature_importance = Series(classifier[-1].coef_[0], index=feature_names)
+            feature_importance = None
 
     if not return_model:
         try:
@@ -360,16 +372,14 @@ def cross_validate_model_fold(chunk_input: WorkerInput) -> ModelResult:
         except AttributeError:
             pass
 
-    if get_log_level() == 1:
-        print(".")
-    else:
-        log("Execution fold finished", level=2)
+    y_test_predict = y_test_score.round()
+    y_train_predict = y_train_score.round()
 
     return ModelResult(
-        y_test_score=y_predict_probabilities,
-        y_test_predict=y_predict,
+        y_test_score=y_test_score,
+        y_test_predict=y_test_predict,
         y_train_predict=y_train_predict,
-        y_train_score=y_train_predict_probabilities,
+        y_train_score=y_train_score,
         feature_importance=feature_importance,
         model=classifier[-1] if return_model else None,
         elapsed=timer.elapsed_cpu()
@@ -380,7 +390,7 @@ cross_validate_model_fold_cached = memory.cache(cross_validate_model_fold)
 
 
 def cross_validate_model_fold_args(
-        classifier, get_x_y, train_index, test_index, return_model: bool = True
+    classifier, get_x_y, train_index, test_index, return_model: bool = True
 ) -> ModelResult:
     X, y = get_x_y()
     return cross_validate_model_fold(
@@ -476,10 +486,8 @@ def join_repeats_cv_results(results: List[ModelCVResult]) -> ModelCVResult:
 
 def get_feature_importance_from_cv_result(result: ModelCVResult) -> DataFrame:
     return statements(
-        feature_importance_vector := pandas.concat(
-            result['feature_importance'],
-            axis=1
-        ).transpose(),
+        feature_importance_vector := pandas.concat(result['feature_importance'],
+                                                   axis=1).transpose(),
         DataFrame(
             {
                 'mean': feature_importance_vector.mean(),
@@ -491,8 +499,8 @@ def get_feature_importance_from_cv_result(result: ModelCVResult) -> DataFrame:
 
 def join_folds_cv_result(result: ModelCVResult) -> ModelResult:
     return ModelResult(
-        feature_importance=get_feature_importance_from_cv_result(result) if result['feature_importance'][
-                                                                                0] is not None else None,
+        feature_importance=get_feature_importance_from_cv_result(result)
+        if result['feature_importance'][0] is not None else None,
         y_test_score=pandas.concat(result['y_scores']).sort_index(),
         y_test_predict=pandas.concat(result['y_predicts']).sort_index(),
         y_train_predict=pandas.concat(result['y_train_predicts']).sort_index(),
@@ -545,7 +553,7 @@ curves_interpolate_default = 100
 
 
 def compute_curves(
-        y_score: Series, y_true: Series, interpolate=curves_interpolate_default
+    y_score: Series, y_true: Series, interpolate=curves_interpolate_default
 ) -> ModelResultCurves:
     y_masked = y_true[y_score.index]
     fpr, tpr, _ = roc_curve(
@@ -572,9 +580,9 @@ def compute_curves(
 
 
 def compute_curves_folds(
-        y_score_folds: List[Series],
-        y_true: Series,
-        interpolate=curves_interpolate_default
+    y_score_folds: List[Series],
+    y_true: Series,
+    interpolate=curves_interpolate_default
 ) -> ModelResultCurvesStd:
     curves_folds = []
     curve_horizontal: List[float] = []
@@ -603,39 +611,44 @@ def compute_curves_folds(
 
 
 def compute_regression_metrics_from_result(
-        y: Series,
-        result: ModelCVResult,
+    y: Series,
+    result: ModelCVResult,
 ) -> Optional[List[RegressionMetrics]]:
-    return [
-        compute_regression_metrics(y_score, y)
-        for y_score in result['y_scores']
-    ]
+    return [compute_regression_metrics(y_score, y) for y_score in result['y_scores']]
 
 
 def compute_classification_metrics_from_result(
-        y: Series,
-        result: ModelCVResult,
-        target_variable: str = 'y_scores',
-        threshold: float = DEFAULT_THRESHOLD,
-        ignore_warning: bool = False,
+    y: Series,
+    result: ModelCVResult,
+    target_variable: str = 'y_scores',
+    threshold: float = DEFAULT_THRESHOLD,
+    ignore_warning: bool = False,
 ) -> Optional[List[ClassificationMetrics]]:
     return [
-        compute_classification_metrics(get_1_class_y_score(score), y, threshold=threshold, ignore_warning=ignore_warning)
-        for score in result[target_variable]
+        compute_classification_metrics(
+            get_1_class_y_score(score), y, threshold=threshold, ignore_warning=ignore_warning
+        ) for score in result[target_variable]
     ]
 
 
 def get_classification_metrics(
-        y: Series,
-        result: ModelCVResult,
+    y: Series,
+    result: ModelCVResult,
+) -> Optional[ClassificationMetricsWithSTD]:
+    return compute_classification_metrics_folds(result['y_scores'], y)
+
+
+def get_classification_metrics_survival(
+    y: Any,
+    result: ModelCVResult,
 ) -> Optional[ClassificationMetricsWithSTD]:
     return compute_classification_metrics_folds(result['y_scores'], y)
 
 
 @curry
 def get_regression_metrics(
-        y: Series,
-        result: ModelCVResult,
+    y: Series,
+    result: ModelCVResult,
 ) -> Optional[ClassificationMetricsWithSTD]:
     return compute_regression_metrics_folds(result['y_scores'], y)
 
@@ -651,7 +664,7 @@ def compute_ci_for_metrics_collection(metrics: List[ClassificationMetrics]) -> D
     attributes = get_object_attributes(metrics[0])
     metrics_with_ci_dict = {
         attribute: pass_args(
-            confidence_interval(get_dof(), list(pluck(attribute, metrics))),
+            confidence_interval(list(pluck(attribute, metrics))),
             lambda m, ci, std: ValueWithStatistics(m, std, ci),
         )
         for attribute in attributes
@@ -660,9 +673,9 @@ def compute_ci_for_metrics_collection(metrics: List[ClassificationMetrics]) -> D
 
 
 def get_best_threshold_from_roc(
-        tps: np.array,
-        fps: np.array,
-        thresholds: np.array,
+    tps: np.array,
+    fps: np.array,
+    thresholds: np.array,
 ) -> Tuple[float, int]:
     J = np.abs(tps - fps)
     ix = np.argmax(J)
@@ -677,11 +690,11 @@ def get_best_threshold_from_results(y_true: Series, results: List[ModelCVResult]
 
 
 def compute_classification_metrics_from_results_with_statistics(
-        y_true: Series,
-        results: List[ModelCVResult],
-        threshold: Optional[float] = None,
-        target_variable: str = 'y_scores',
-        ignore_warning: bool = False,
+    y_true: Series,
+    results: List[ModelCVResult],
+    threshold: Optional[float] = None,
+    target_variable: str = 'y_scores',
+    ignore_warning: bool = False,
 ) -> ClassificationMetricsWithStatistics:
     chosen_threshold = threshold if threshold is not None else get_best_threshold_from_results(
         y_true, results
@@ -689,13 +702,16 @@ def compute_classification_metrics_from_results_with_statistics(
     return pipeline(
         results,
         [
-            partial(mapl, partial(
-                compute_classification_metrics_from_result,
-                y_true,
-                threshold=chosen_threshold,
-                target_variable=target_variable,
-                ignore_warning=ignore_warning,
-            )),
+            partial(
+                mapl,
+                partial(
+                    compute_classification_metrics_from_result,
+                    y_true,
+                    threshold=chosen_threshold,
+                    target_variable=target_variable,
+                    ignore_warning=ignore_warning,
+                )
+            ),
             flatten,
             list,
             compute_ci_for_metrics_collection,
@@ -704,25 +720,22 @@ def compute_classification_metrics_from_results_with_statistics(
 
 
 def compute_regression_metrics_from_results_with_statistics(
-        y_true: Series,
-        results: List[ModelCVResult],
+    y_true: Series,
+    results: List[ModelCVResult],
 ) -> RegressionMetricsWithStatistics:
     return pipeline(
         results,
         [
-            partial(mapl, partial(compute_regression_metrics_from_result, y_true)),
-            flatten,
-            list,
-            compute_ci_for_metrics_collection,
-            lambda item: RegressionMetricsWithStatistics(**item)
+            partial(mapl, partial(compute_regression_metrics_from_result, y_true)), flatten, list,
+            compute_ci_for_metrics_collection, lambda item: RegressionMetricsWithStatistics(**item)
         ],
     )
 
 
 def compute_metrics_from_result_ci(
-        y_true: Series,
-        result: ModelCVResult,
-        threshold: Optional[float] = None
+    y_true: Series,
+    result: ModelCVResult,
+    threshold: Optional[float] = None
 ) -> ClassificationMetricsWithStatistics:
     chosen_threshold = threshold if threshold is not None else get_best_threshold_from_results(
         y_true, [result]
@@ -737,10 +750,10 @@ def compute_metrics_from_result_ci(
 
 
 def get_roc_point_by_threshold(
-        threshold: float,
-        fpr: np.array,
-        tpr: np.array,
-        thresholds: np.array,
+    threshold: float,
+    fpr: np.array,
+    tpr: np.array,
+    thresholds: np.array,
 ) -> Tuple[float, float]:
     first_index = find_index(lambda _index: _index >= threshold, thresholds, reverse=True)
     second_index = first_index if first_index == len(thresholds) - 1 else first_index + 1
@@ -748,7 +761,7 @@ def get_roc_point_by_threshold(
     first_threshold = thresholds[first_index]
     second_threshold = thresholds[second_index]
     ratio = (threshold - second_threshold) / (first_threshold - second_threshold) if (
-            second_threshold != first_threshold
+        second_threshold != first_threshold
     ) else 1
     return (
         ((fpr[second_index] * (1 - ratio)) + (fpr[first_index] * ratio)),
@@ -757,8 +770,9 @@ def get_roc_point_by_threshold(
 
 
 def compute_threshold_averaged_roc(
-        y_true: Series, results: List[ModelCVResult]
+    y_true: Series, results: List[ModelCVResult]
 ) -> Tuple[np.array, np.array, np.array]:
+
     def roc_curve_for_fold(y_score):
         _fpr, _tpr, thresholds = roc_curve(y_true.loc[y_score.index], get_1_class_y_score(y_score))
         return _fpr, _tpr, thresholds
@@ -772,7 +786,7 @@ def compute_threshold_averaged_roc(
     all_thresholds = sorted(list(flatten([roc[2] for roc in roc_curves])), reverse=True)
 
     def get_merged_roc_point(
-            _roc_curves: List[Tuple[np.array, np.array, np.array]], threshold: float
+        _roc_curves: List[Tuple[np.array, np.array, np.array]], threshold: float
     ) -> Tuple[float, float]:
         if threshold > 1:
             threshold = 1
@@ -813,7 +827,9 @@ def compute_threshold_averaged_roc(
     )
 
 
-def get_1_class_y_score(y_score: DataFrame) -> Series:
+def get_1_class_y_score(y_score: Union[DataFrame, Series]) -> Series:
+    if isinstance(y_score, Series):
+        return y_score
     return y_score.iloc[:, 1]
 
 
@@ -858,7 +874,7 @@ def get_metrics_from_confusion_matrix(confusion_matrix) -> ConfusionMetrics:
 
 
 def get_confusion_from_threshold(
-        y: Series, scores: Series, threshold: float = 0.5
+    y: Series, scores: Series, threshold: float = 0.5
 ) -> ConfusionMatrix:
     fn = 0
     tn = 0
@@ -914,7 +930,7 @@ def get_metrics_from_pr(curve, tpr_threshold=0.8) -> PRPoint:
 
 
 def get_end_to_end_metrics_table(
-        y_true, results_for_methods_optimized, results_for_methods_default
+    y_true, results_for_methods_optimized, results_for_methods_default
 ):
     metrics_for_methods_optimized = valmap(
         lambda r: compute_classification_metrics_from_results_with_statistics(y_true, r),
@@ -930,7 +946,7 @@ def get_end_to_end_metrics_table(
 
 
 def get_si_k_evaluation(
-        X_all, range_n_clusters, protocol, features_for_k: List[Union[List[str], str]]
+    X_all, range_n_clusters, protocol, features_for_k: List[Union[List[str], str]]
 ):
     is_flat_features = all((not isinstance(item, list) for item in features_for_k))
 
@@ -955,14 +971,15 @@ def get_si_k_evaluation(
 
 
 def compare_and_format_results(
-        y_true: Series,
-        results_for_methods: Dict[str, List[ModelCVResult]],
-        include: Tuple[str] = (
-                'balanced_accuracy', 'roc_auc', 'recall', 'fpr', 'f1', 'average_precision'
-        ),
+    y_true: Series,
+    results_for_methods: Dict[str, List[ModelCVResult]],
+    include: Tuple[str] = (
+        'balanced_accuracy', 'roc_auc', 'recall', 'fpr', 'f1', 'average_precision'
+    ),
 ) -> str:
     metrics_for_methods = valmap(
-        lambda r: compute_classification_metrics_from_results_with_statistics(y_true, r), results_for_methods
+        lambda r: compute_classification_metrics_from_results_with_statistics(y_true, r),
+        results_for_methods
     )
 
     def get_line(method: str, metrics: ClassificationMetricsWithStatistics):
@@ -1002,13 +1019,13 @@ def compare_and_format_results(
 
 
 def get_list_of_scores_from_repeated_cv_results(
-        repeated_cv_results: List[ModelCVResult]
+    repeated_cv_results: List[ModelCVResult]
 ) -> List[Series]:
     return list(flatten([repeat['y_scores'] for repeat in repeated_cv_results]))
 
 
 def average_list_of_confusion_matrices(
-        matrices: List[ConfusionMatrix]
+    matrices: List[ConfusionMatrix]
 ) -> ConfusionMatrixWithStatistics:
     return pipe(
         matrices,
@@ -1021,7 +1038,7 @@ def average_list_of_confusion_matrices(
 
 
 def partial_dependency_analysis(
-        method: Method, X: DataFrame, y: Series, features: List = None
+    method: Method, X: DataFrame, y: Series, features: List = None
 ) -> None:
     if features is None:
         features = list(X.columns)
@@ -1077,3 +1094,8 @@ def get_roc_from_fold(y, result):
 def get_pr_from_fold(y, result):
     y_score = result['y_predict_probabilities'].iloc[:, 1]
     return precision_recall_curve(y.loc[y_score.index], y_score)
+
+
+def get_train_test_sampling(X: DataFrame, fraction=0.8) -> List[Tuple[List[int], List[int]]]:
+    n_train = round(fraction * len(X))
+    return [(list(range(n_train)), list(range(n_train, len(X))))]

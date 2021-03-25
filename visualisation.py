@@ -1,4 +1,5 @@
-from typing import Iterable, List, Dict, Any, Mapping
+from toolz import merge
+from typing import Iterable, List, Dict, Any, Mapping, Union
 
 import matplotlib.font_manager
 import matplotlib.pyplot as plt
@@ -10,6 +11,7 @@ from IPython.display import display
 from ipywidgets import widgets
 from matplotlib import rc
 from matplotlib.ticker import MaxNLocator
+from numbers import Real, Rational, Integral
 from pandas import DataFrame, Series
 from scipy.cluster.hierarchy import dendrogram
 from sklearn.metrics import silhouette_samples, silhouette_score, roc_curve, auc
@@ -21,7 +23,7 @@ from evaluation_functions import ModelCVResult, ModelResult, \
     get_result_vector_from_result, compute_threshold_averaged_roc
 from formatting import tabulate_formatted, format_item_label, format_style, format_item, Category, CategoryStyled, \
     Attribute, dict_to_table_vertical, dict_to_struct_table_horizontal, render_struct_table, \
-    dict_to_struct_table_vertical
+    dict_to_struct_table_vertical, p
 from functional import flatten, pipe
 
 
@@ -29,6 +31,14 @@ def init(percent: float = 60):
     notebook_width(percent)
     autostart()
     fix_scroll_bars()
+
+
+def display_number(i: Rational) -> None:
+    display_html(format_number(i))
+
+
+def format_number(i: Union[Integral, Rational]) -> str:
+    return f'{i:,}'.replace(',', ' ')
 
 
 def notebook_width(percent: float) -> None:
@@ -135,7 +145,7 @@ def show_hide_code(default: bool = True) -> None:
         """
 
         output_string = "<script>$(\"div.input\").{}</script>"
-        output_args = (javascript_functions[code_state],)
+        output_args = (javascript_functions[code_state], )
         output = output_string.format(*output_args)
 
         display(HTML(output))
@@ -302,7 +312,11 @@ def format_cluster_real_labels(statistic: Dict[int, Series]) -> str:
 
 
 def display_statistics(
-        protocol: ClusteringProtocol, X: DataFrame, y_true: Series, y_pred: List
+    protocol: ClusteringProtocol,
+    X: DataFrame,
+    y_true: Series,
+    y_pred: List,
+    display_random_curve: bool = True,
 ) -> None:
     score = protocol.measure_metrics(X, y_pred, y_true)
     print(text_title("ClassificationMetrics"))
@@ -318,15 +332,27 @@ def display_statistics(
         display(statistic)
 
 
-def plot_roc_from_result_vector(y: Series, result: ModelResult, label: str = None, plot_kwargs: Mapping = None) -> None:
+def plot_roc_from_result_vector(
+    y: Series,
+    result: ModelResult,
+    label: str = None,
+    plot_kwargs: Mapping = None,
+    display_random_curve: bool = True,
+) -> None:
     plot_kwargs = plot_kwargs if plot_kwargs is not None else {}
 
     fpr, tpr, _ = roc_curve(y.loc[result['y_test_score'].index], result['y_test_score'])
     auc_value = auc(fpr, tpr)
     plt.plot(
-        fpr, tpr, lw=1, label=f'{"ROC curve" if not label else label} (AUC=%0.3f)' % auc_value, **plot_kwargs
+        fpr,
+        tpr,
+        lw=1,
+        label=f'{"ROC curve" if not label else label} (AUC=%0.3f)' % auc_value,
+        **plot_kwargs
     )
-    plt.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--')
+    if display_random_curve:
+        plt.plot([0, 1], [0, 1], color='#CCCCCC', lw=0.75, linestyle='-')
+
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
     plt.xlabel('False Positive Rate')
@@ -334,12 +360,24 @@ def plot_roc_from_result_vector(y: Series, result: ModelResult, label: str = Non
     plt.legend(loc="lower right")
 
 
-def plot_roc_from_result(y: Series, result: ModelCVResult, label: str = None, plot_kwargs: Mapping = None) -> None:
-    plot_roc_from_result_vector(y, get_result_vector_from_result(result), label, plot_kwargs=plot_kwargs)
+def plot_roc_from_result(
+    y: Series,
+    result: ModelCVResult,
+    label: str = None,
+    plot_kwargs: Mapping = None,
+    display_random_curve: bool = True,
+) -> None:
+    plot_roc_from_result_vector(
+        y,
+        get_result_vector_from_result(result),
+        label,
+        plot_kwargs=plot_kwargs,
+        display_random_curve=display_random_curve
+    )
 
 
 def plot_roc_from_results_averaged(
-        y: Series, results: List[ModelCVResult], label: str = None
+    y: Series, results: List[ModelCVResult], label: str = None
 ) -> None:
     normalized_fpr = np.linspace(0, 1, 99)
 
@@ -363,10 +401,10 @@ def plot_roc_from_results_averaged(
     plt.plot(
         normalized_fpr,
         mean_tpr,
-        lw=0.1,
+        lw=1.5,
         label=f'{"ROC curve" if not label else label} (AUC=%0.3f ±%0.3f)' % (mean_auc, std_auc)
     )
-    plt.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--')
+    plt.plot([0, 1], [0, 1], color='#CCCCCC', lw=0.75, linestyle=':')
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
     plt.xlabel('False Positive Rate')
@@ -375,7 +413,7 @@ def plot_roc_from_results_averaged(
 
 
 def plot_roc_from_results_threshold_averaged(
-        y: Series, results: List[ModelCVResult], label: str = None
+    y: Series, results: List[ModelCVResult], label: str = None
 ) -> None:
     lw = 2
 
@@ -392,6 +430,7 @@ def plot_roc_from_results_threshold_averaged(
 
 
 def print_fonts() -> None:
+
     def make_html(fontname):
         return "<p>{font}: <span style='font-family:{font}; font-size: 24px;'>{font}</p>".format(
             font=fontname
@@ -416,13 +455,13 @@ def notify(message: str = 'Done!') -> None:
 
 
 def plot_feature_importance(coefficients: DataFrame, limit: int = None) -> None:
-    with pd.option_context(
-            'display.max_rows', None, 'display.max_columns', None
-    ):
+    with pd.option_context('display.max_rows', None, 'display.max_columns', None):
         if not limit:
             limit = len(coefficients)
 
-        coefficients = coefficients.reindex(coefficients.abs().sort_values(ascending=True, by='mean').index)
+        coefficients = coefficients.reindex(
+            coefficients.abs().sort_values(ascending=True, by='mean').index
+        )
         coefficients = coefficients[-limit:]
 
     plt.figure(figsize=(4, 7 * (limit / 25)))
@@ -498,7 +537,6 @@ def plot_style(grid_parameters: Dict = None, axis=None):
         labelsize=12,
     )
 
-    axis.title.set_position([.5, 1.03])
     axis.title.set_fontsize(15)
     axis.tick_params(axis='x', colors='black')
     axis.tick_params(axis='y', colors='black')
@@ -509,14 +547,14 @@ def plot_style(grid_parameters: Dict = None, axis=None):
 
 
 def plot_line_chart(
-        x,
-        y,
-        x_axis_label: str = None,
-        y_axis_label: str = None,
-        title: str = None,
-        plot_parameters: Dict = None,
-        grid_parameters: Dict = None,
-        axis=None
+    x,
+    y,
+    x_axis_label: str = None,
+    y_axis_label: str = None,
+    title: str = None,
+    plot_parameters: Dict = None,
+    grid_parameters: Dict = None,
+    axis=None
 ):
     plot_parameters = plot_parameters or {}
     axis = axis or plt.gca()
@@ -542,7 +580,7 @@ def display_print(content: Any) -> None:
 
 
 def savefig(*args, **kwargs) -> None:
-    plt.savefig(*args, **kwargs, bbox_inches='tight', pad_inches=0.1)
+    plt.savefig(*args, **merge(dict(bbox_inches='tight', pad_inches=0.1, dpi=300), kwargs))
 
 
 italic = {'font-style': 'italic'}
@@ -633,7 +671,6 @@ template = [
     Attribute(indent=2, key='CORNELL_PROD', label='Cornell'),
     Attribute(indent=2, key='SOKOLOW_LYON', label='Sokolow-Lyon'),
 ]
-
 
 # format_item
 
@@ -742,8 +779,15 @@ def text_main_title(string: str) -> str:
 
 def qgrid(*args, **kwargs):
     import qgrid
-    return qgrid.show_grid(*args, **kwargs, grid_options={'forceFitColumns': False, 'defaultColumnWidth': 200},
-                           show_toolbar=True)
+    return qgrid.show_grid(
+        *args,
+        **kwargs,
+        grid_options={
+            'forceFitColumns': False,
+            'defaultColumnWidth': 200
+        },
+        show_toolbar=True
+    )
 
 
 def display_dict_as_table_horizontal(input_dict: Dict) -> None:
@@ -762,3 +806,13 @@ def display_dict_as_table_vertical(input_dict: Dict) -> None:
         render_struct_table,
         display_html,
     )
+
+
+def display_histogram(data_frame: DataFrame) -> None:
+    data_frame.replace(np.nan, 'NAN').hist(grid=False)
+
+
+def sort_legend(axis: Any) -> None:
+    handles, labels = axis.get_legend_handles_labels()
+    labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: t[0]))
+    axis.legend(handles, labels)

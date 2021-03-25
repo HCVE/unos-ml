@@ -17,7 +17,7 @@ from api.api_client import api_send, external_event, event, output_ready, traini
 from api.api_functions import output_feature_importance, output_curves_folds, output_feature_importance_table
 from api.api_utils import json_serialize_types, json_deserialize_types
 from arguments import get_params
-from cache import memory_l2
+from cache import memory
 from methods.parameter_space import configurations_to_grid_search, configuration_to_params, instantiate_configuration, \
     generate_configuration_series, get_defaults
 from utils import warning, log, load_input_data, load_global_config, extract_features_and_label, ignore_futures, Timer, \
@@ -131,7 +131,9 @@ async def run_training_curve_generic(
             y,
             label,
         )
-        metrics_test = compute_classification_metrics_folds(result_for_comparison.y_scores, y_for_comparison)
+        metrics_test = compute_classification_metrics_folds(
+            result_for_comparison.y_scores, y_for_comparison
+        )
         metrics_train = compute_classification_metrics_folds(
             result_for_comparison.y_train_scores, y_for_comparison
         )
@@ -176,7 +178,7 @@ def output_all(result_for_comparison, y_for_comparison) -> Tuple[dict, List[dict
     return payload, records
 
 
-output_all_cached = memory_l2.cache(output_all)
+output_all_cached = memory.cache(output_all)
 
 
 def get_result_for_comparison(
