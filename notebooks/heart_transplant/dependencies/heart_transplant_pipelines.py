@@ -11,7 +11,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer
-from sksurv.linear_model import CoxPHSurvivalAnalysis
+# from sksurv.linear_model import CoxPHSurvivalAnalysis
 from toolz import merge, concat
 from typing import List, Tuple, Any
 from xgboost import XGBClassifier
@@ -149,18 +149,18 @@ logistic_regression_hyperopt = hp.choice(
     }]
 )
 
-class CoxPHSurvivalAnalysis1Year(CoxPHSurvivalAnalysis):
-
-    def predict_proba(self, X) -> DataFrame:
-        y_score_0 = [fn(365) for fn in self.predict_survival_function(X)]
-        y_score_1 = [1 - y_score for y_score in y_score_0]
-        return DataFrame(
-            {
-                'y_predict_probabilities_0': y_score_0,
-                'y_predict_probabilities_1': y_score_1
-            },
-            index=X.index
-        )
+# class CoxPHSurvivalAnalysis1Year(CoxPHSurvivalAnalysis):
+#
+#     def predict_proba(self, X) -> DataFrame:
+#         y_score_0 = [fn(365) for fn in self.predict_survival_function(X)]
+#         y_score_1 = [1 - y_score for y_score in y_score_0]
+#         return DataFrame(
+#             {
+#                 'y_predict_probabilities_0': y_score_0,
+#                 'y_predict_probabilities_1': y_score_1
+#             },
+#             index=X.index
+#         )
 
 cox_ph_hyperopt = hp.choice(
     'base', [
@@ -180,25 +180,25 @@ cox_ph_hyperopt = hp.choice(
     ]
 )
 
-#noinspection PyUnusedLocal
-def get_cox_ph_pipeline(
-    X: DataFrame,
-    features: List[str] = None,
-    balance_class: bool = True,
-    n_jobs: int = None,
-    memory: Any = None,
-    verbose: int = 0,
-):
-    used_categorical_features, used_continuous_features = get_final_feature_sets(X)
-
-    return DFPipeline(
-        [
-            *get_preprocessing(X, do_one_hot=True),
-            ('classifier', CoxPHSurvivalAnalysis1Year(alpha=0.5)),
-        ],
-        memory=memory,
-        verbose=verbose,
-    )
+# noinspection PyUnusedLocal
+# def get_cox_ph_pipeline(
+#     X: DataFrame,
+#     features: List[str] = None,
+#     balance_class: bool = True,
+#     n_jobs: int = None,
+#     memory: Any = None,
+#     verbose: int = 0,
+# ):
+#     used_categorical_features, used_continuous_features = get_final_feature_sets(X)
+#
+#     return DFPipeline(
+#         [
+#             *get_preprocessing(X, do_one_hot=True),
+#             ('classifier', CoxPHSurvivalAnalysis1Year(alpha=0.5)),
+#         ],
+#         memory=memory,
+#         verbose=verbose,
+#     )
 #
 
 

@@ -6,8 +6,7 @@ from pandas import DataFrame, Series
 from typing import List, Tuple, Iterable
 
 from evaluation_functions import join_repeats_and_folds_cv_results, \
-    compute_classification_metrics_from_results_with_statistics
-from nested_cv import evaluate_method_on_sets, StaticHyperParameters, \
+    compute_classification_metrics_from_results_with_statistics, StaticHyperParameters, evaluate_method_on_sets, \
     get_cv_results_from_simple_cv_evaluation
 from notebooks.heart_transplant.dependencies.heart_transplant_data import get_shuffled_cv_inputs_cached, \
     get_rolling_cv_inputs_cached
@@ -101,7 +100,8 @@ def evaluate(
                     print('Skipping...')
                     continue
                 else:
-                    result_per_n_features = data[method_name]
+                    # TODO: continue when left
+                    result_per_n_features = {}
             else:
                 result_per_n_features = {}
 

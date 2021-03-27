@@ -1,3 +1,5 @@
 .idea
 temporary
 .ipynb*
+
+__pycache__/

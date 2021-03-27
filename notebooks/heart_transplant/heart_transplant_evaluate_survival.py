@@ -6,15 +6,15 @@ import logging
 from pandas import DataFrame, Series
 from typing import List, Tuple
 
-from evaluation_functions import get_classification_metrics, get_train_test_sampling
+from evaluation_functions import get_classification_metrics, get_train_test_sampling, BayesianOptimization, \
+    DefaultHyperParameters, evaluate_method_on_sets
 from functional import pipe
-from nested_cv import evaluate_method_on_sets, DefaultHyperParameters
 from notebooks.heart_transplant.dependencies.heart_transplant_data import get_shuffled_cv_inputs_cached, \
     get_expanding_window_inputs_for_test_cached, get_rolling_cv_inputs_cached
 from notebooks.heart_transplant.dependencies.heart_transplant_functions import reverse_log_transform_dataset, \
     get_survival_y, AgeGroup
-from notebooks.heart_transplant.dependencies.heart_transplant_pipelines import get_cox_ph_pipeline
-from utils import evaluate_and_assign_if_not_present
+from notebooks.heart_transplant.dependencies.heart_transplant_pipelines import get_cox_ph_pipeline, cox_ph_hyperopt
+from utils import evaluate_and_assign_if_not_present, LockedShelve
 
 HEART_TRANSPLANT_CV_SHUFFLED_IDENTIFIER = 'data/heart_transplant/heart_transplant_results_shuffled_cv'
 HEART_TRANSPLANT_EXPANDING_IDENTIFIER = 'data/heart_transplant/heart_transplant_results_expanding2'
@@ -85,29 +85,43 @@ def evaluate(
         )
         return
 
-    def get_shelve():
-        return shelve.open(file_identifier)
+    persistence = LockedShelve(file_identifier)
 
     print('Starting training')
 
     logging.getLogger().setLevel(logging.DEBUG)
 
     y_survival = get_survival_y(dataset_raw)
+    #
+    # evaluate_and_assign_if_not_present(
+    #     persistence,
+    #     f'survival_cox_ph_default',
+    #     lambda: evaluate_method_on_sets(
+    #         lambda: get_cox_ph_pipeline(X_valid, y_survival, n_jobs=1, balance_class=True),
+    #         X_valid,
+    #         y_survival,
+    #         DefaultHyperParameters(),
+    #         splits=get_train_test_sampling(X_valid),
+    #         parallel=False,
+    #         n_jobs=20,
+    #         get_metrics=lambda _, results: get_classification_metrics(y, results)
+    #     ),
+    #     force_execute=True,
+    # )
 
     evaluate_and_assign_if_not_present(
-        get_shelve,
-        f'survival_cox_ph_default',
-        lambda: evaluate_method_on_sets(
-            lambda: get_cox_ph_pipeline(X_valid, y_survival, n_jobs=1, balance_class=True),
+        persistence,
+        key='survival_cox_ph_tuned',
+        callback=lambda: evaluate_method_on_sets(
+            lambda: get_cox_ph_pipeline(X_valid),
             X_valid,
             y_survival,
-            DefaultHyperParameters(),
+            BayesianOptimization(cox_ph_hyperopt, iterations=1),
             splits=get_train_test_sampling(X_valid),
             parallel=False,
-            n_jobs=20,
-            get_metrics=lambda _, results: get_classification_metrics(y, results)
+            n_jobs=5,
+            get_metrics=lambda _, result: get_classification_metrics(y, result)
         ),
-        force_execute=True,
     )
 
 

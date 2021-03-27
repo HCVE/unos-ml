@@ -5,12 +5,13 @@ import argparse
 import logging
 import numpy
 from datetime import time
+from filelock import FileLock
 from pandas import DataFrame, Series
 from typing import List, Tuple
 
 from functional import pipe
 from methods.random_forest.random_forest import RandomForestMethod
-from nested_cv import evaluate_method_on_sets, BayesianOptimization, DefaultHyperParameters
+from evaluation_functions import BayesianOptimization, DefaultHyperParameters, evaluate_method_on_sets
 from notebooks.heart_transplant.dependencies.heart_transplant_data import get_shuffled_cv_inputs_cached, \
     get_expanding_window_inputs_for_test_cached, get_rolling_cv_inputs_cached
 from notebooks.heart_transplant.dependencies.heart_transplant_functions import reverse_log_transform_dataset, \
@@ -18,22 +19,14 @@ from notebooks.heart_transplant.dependencies.heart_transplant_functions import r
 from notebooks.heart_transplant.dependencies.heart_transplant_pipelines import get_logistic_regression_pipeline, \
     get_random_forest_pipeline, xgboost_hyperopt, get_final_features, get_xgboost_pipeline, \
     logistic_regression_hyperopt, get_categorical_and_continuous_features
-from utils import evaluate_and_assign_if_not_present
+from utils import evaluate_and_assign_if_not_present, LockedShelve
 
 HEART_TRANSPLANT_CV_SHUFFLED_IDENTIFIER = 'data/heart_transplant/heart_transplant_results_shuffled_cv'
 HEART_TRANSPLANT_EXPANDING_IDENTIFIER = 'data/heart_transplant/heart_transplant_results_expanding'
 
 
-def main():
+def main(args):
     numpy.random.seed(49788)
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--type', choices=('shuffled_cv', 'expanding', 'expanding_test'))
-    parser.add_argument('--survival-days', type=int)
-    parser.add_argument('--group', choices=('L_18', 'ME_18', 'ALL'))
-    parser.add_argument('--only-export-csv', default=False, action='store_true')
-    parser.add_argument('--only-show-removed-columns', default=False, action='store_true')
-    args = parser.parse_args()
 
     if args.type == 'shuffled_cv':
         evaluate(
@@ -53,7 +46,7 @@ def main():
         )
     elif args.type == 'expanding_test':
         evaluate(
-            f'{HEART_TRANSPLANT_EXPANDING_IDENTIFIER}_{args.survival_days}_{args.group}',
+            f'{HEART_TRANSPLANT_EXPANDING_IDENTIFIER}_test_{args.survival_days}_{args.group}',
             *get_expanding_window_inputs_for_test_cached(
                 survival_days=args.survival_days, group=AgeGroup(args.group)
             ),
@@ -93,9 +86,6 @@ def evaluate(
         )
         return
 
-    def get_shelve():
-        return shelve.open(file_identifier)
-
     print(f'Starting training, n folds={len(sampling_sets)}')
 
     logging.getLogger().setLevel(logging.DEBUG)
@@ -103,13 +93,14 @@ def evaluate(
     n_jobs = len(sampling_sets)
 
     common_pipeline_args = dict(memory=None, verbose=0)
-    parallel = False
+    parallel = True
 
     categorical_features, _ = get_categorical_and_continuous_features(X_valid)
 
+    persistence = LockedShelve(file_identifier)
     method_name = 'l2_logistic_regression_default'
     evaluate_and_assign_if_not_present(
-        get_shelve,
+        persistence,
         method_name,
         lambda: evaluate_method_on_sets(
             lambda: get_logistic_regression_pipeline(X_valid, y, **common_pipeline_args),
@@ -120,28 +111,63 @@ def evaluate(
             parallel=parallel,
             n_jobs=n_jobs,
         ),
+    )
+
+    method_name = 'l2_logistic_regression_tuned'
+    evaluate_and_assign_if_not_present(
+        persistence,
+        method_name,
+        lambda: evaluate_method_on_sets(
+            lambda: get_logistic_regression_pipeline(
+                X_valid,
+                y,
+                balance_class=True,
+            ),
+            X_valid,
+            y,
+            BayesianOptimization(logistic_regression_hyperopt, iterations=10),
+            splits=sampling_sets,
+            parallel=parallel,
+            n_jobs=n_jobs,
+        ),
         force_execute=True,
     )
 
-    method_name = 'xgboost_default'
+    method_name = 'l2_logistic_regression_no_hot_default'
     evaluate_and_assign_if_not_present(
-        get_shelve,
+        persistence,
         method_name,
         lambda: evaluate_method_on_sets(
-            lambda: get_xgboost_pipeline(X_valid, y, **common_pipeline_args),
+            lambda:
+            get_logistic_regression_pipeline(X_valid, y, do_one_hot=False, **common_pipeline_args),
             X_valid,
             y,
             DefaultHyperParameters(),
             splits=sampling_sets,
             parallel=parallel,
-            feature_names=get_final_features(X_valid),
-            n_jobs=len(sampling_sets),
+            n_jobs=n_jobs,
+        ),
+    )
+
+    method_name = 'l2_logistic_regression_no_hot_tuned'
+    evaluate_and_assign_if_not_present(
+        persistence,
+        method_name,
+        lambda: evaluate_method_on_sets(
+            lambda:
+            get_logistic_regression_pipeline(X_valid, y, do_one_hot=False, **common_pipeline_args),
+            X_valid,
+            y,
+            BayesianOptimization(logistic_regression_hyperopt, iterations=10),
+            splits=sampling_sets,
+            parallel=False,
+            n_jobs=n_jobs,
         ),
     )
 
     method_name = 'random_forest_default'
     evaluate_and_assign_if_not_present(
-        get_shelve,
+        persistence,
         method_name,
         lambda: evaluate_method_on_sets(
             lambda: get_random_forest_pipeline(X_valid, y, n_jobs=1, **common_pipeline_args),
@@ -154,27 +180,9 @@ def evaluate(
         ),
     )
 
-    method_name = 'xgboost_tuned'
-    evaluate_and_assign_if_not_present(
-        get_shelve,
-        method_name,
-        lambda: evaluate_method_on_sets(
-            lambda: get_xgboost_pipeline(
-                X_valid,
-                y,
-            ),
-            X_valid,
-            y,
-            BayesianOptimization(xgboost_hyperopt, target_metric='roc_auc', iterations=50),
-            splits=sampling_sets,
-            parallel=parallel,
-            n_jobs=n_jobs,
-        ),
-    )
-
     method_name = 'random_forest_tuned'
     evaluate_and_assign_if_not_present(
-        get_shelve,
+        persistence,
         method_name,
         lambda: evaluate_method_on_sets(
             lambda: get_random_forest_pipeline(X_valid, y, n_jobs=2),
@@ -191,25 +199,51 @@ def evaluate(
         ),
     )
 
-    method_name = 'l2_logistic_regression_tuned'
-    evaluate_and_assign_if_not_present(
-        get_shelve,
-        method_name,
-        lambda: evaluate_method_on_sets(
-            lambda: get_logistic_regression_pipeline(
+    xgboost_lock = FileLock("temporary/xgboost.lock")
+
+    with xgboost_lock:
+        method_name = 'xgboost_default'
+        evaluate_and_assign_if_not_present(
+            persistence,
+            method_name,
+            lambda: evaluate_method_on_sets(
+                lambda: get_xgboost_pipeline(X_valid, y, **common_pipeline_args),
                 X_valid,
                 y,
-                balance_class=True,
+                DefaultHyperParameters(),
+                splits=sampling_sets,
+                parallel=parallel,
+                feature_names=get_final_features(X_valid),
+                n_jobs=len(sampling_sets),
             ),
-            X_valid,
-            y,
-            BayesianOptimization(logistic_regression_hyperopt, iterations=10),
-            splits=sampling_sets,
-            parallel=parallel,
-            n_jobs=n_jobs,
-        ),
-    )
+        )
+
+    with xgboost_lock:
+        method_name = 'xgboost_tuned'
+        evaluate_and_assign_if_not_present(
+            persistence,
+            method_name,
+            lambda: evaluate_method_on_sets(
+                lambda: get_xgboost_pipeline(
+                    X_valid,
+                    y,
+                ),
+                X_valid,
+                y,
+                BayesianOptimization(xgboost_hyperopt, target_metric='roc_auc', iterations=50),
+                splits=sampling_sets,
+                parallel=parallel,
+                n_jobs=n_jobs,
+            ),
+        )
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--type', choices=('shuffled_cv', 'expanding', 'expanding_test'))
+    parser.add_argument('--survival-days', type=int)
+    parser.add_argument('--group', choices=('L_18', 'ME_18', 'ALL'))
+    parser.add_argument('--only-export-csv', default=False, action='store_true')
+    parser.add_argument('--only-show-removed-columns', default=False, action='store_true')
+    args = parser.parse_args()
+    main(args)
