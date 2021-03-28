@@ -130,40 +130,39 @@ def evaluate(
             parallel=parallel,
             n_jobs=n_jobs,
         ),
-        force_execute=True,
     )
 
-    method_name = 'l2_logistic_regression_no_hot_default'
-    evaluate_and_assign_if_not_present(
-        persistence,
-        method_name,
-        lambda: evaluate_method_on_sets(
-            lambda:
-            get_logistic_regression_pipeline(X_valid, y, do_one_hot=False, **common_pipeline_args),
-            X_valid,
-            y,
-            DefaultHyperParameters(),
-            splits=sampling_sets,
-            parallel=parallel,
-            n_jobs=n_jobs,
-        ),
-    )
+    # method_name = 'l2_logistic_regression_no_hot_default'
+    # evaluate_and_assign_if_not_present(
+    #     persistence,
+    #     method_name,
+    #     lambda: evaluate_method_on_sets(
+    #         lambda:
+    #         get_logistic_regression_pipeline(X_valid, y, do_one_hot=False, **common_pipeline_args),
+    #         X_valid,
+    #         y,
+    #         DefaultHyperParameters(),
+    #         splits=sampling_sets,
+    #         parallel=parallel,
+    #         n_jobs=n_jobs,
+    #     ),
+    # )
 
-    method_name = 'l2_logistic_regression_no_hot_tuned'
-    evaluate_and_assign_if_not_present(
-        persistence,
-        method_name,
-        lambda: evaluate_method_on_sets(
-            lambda:
-            get_logistic_regression_pipeline(X_valid, y, do_one_hot=False, **common_pipeline_args),
-            X_valid,
-            y,
-            BayesianOptimization(logistic_regression_hyperopt, iterations=10),
-            splits=sampling_sets,
-            parallel=False,
-            n_jobs=n_jobs,
-        ),
-    )
+    # method_name = 'l2_logistic_regression_no_hot_tuned'
+    # evaluate_and_assign_if_not_present(
+    #     persistence,
+    #     method_name,
+    #     lambda: evaluate_method_on_sets(
+    #         lambda:
+    #         get_logistic_regression_pipeline(X_valid, y, do_one_hot=False, **common_pipeline_args),
+    #         X_valid,
+    #         y,
+    #         BayesianOptimization(logistic_regression_hyperopt, iterations=10),
+    #         splits=sampling_sets,
+    #         parallel=False,
+    #         n_jobs=n_jobs,
+    #     ),
+    # )
 
     method_name = 'random_forest_default'
     evaluate_and_assign_if_not_present(

@@ -16,8 +16,8 @@ from notebooks.heart_transplant.dependencies.heart_transplant_functions import r
 from notebooks.heart_transplant.dependencies.heart_transplant_pipelines import get_cox_ph_pipeline, cox_ph_hyperopt
 from utils import evaluate_and_assign_if_not_present, LockedShelve
 
-HEART_TRANSPLANT_CV_SHUFFLED_IDENTIFIER = 'data/heart_transplant/heart_transplant_results_shuffled_cv'
-HEART_TRANSPLANT_EXPANDING_IDENTIFIER = 'data/heart_transplant/heart_transplant_results_expanding2'
+HEART_TRANSPLANT_CV_SHUFFLED_IDENTIFIER = 'data/heart_transplant/heart_transplant_survival_results_shuffled_cv'
+HEART_TRANSPLANT_SURVIVAL_ROLLING_IDENTIFIER = 'data/heart_transplant/heart_transplant_survival_results_expanding'
 
 
 def main():
@@ -38,18 +38,18 @@ def main():
         )
     elif args.type == 'expanding':
         evaluate(
-            f'{HEART_TRANSPLANT_EXPANDING_IDENTIFIER}_{args.survival_days}_{args.group}',
+            f'{HEART_TRANSPLANT_SURVIVAL_ROLLING_IDENTIFIER}_{args.survival_days}_{args.group}',
             *get_rolling_cv_inputs_cached(
-                survival_days=args.survival_days, group=AgeGroup(args.group)
+                survival_days=args.survival_days, group=AgeGroup[args.group]
             ),
             only_export_csv=args.only_export_csv,
             only_show_removed_columns=args.only_show_removed_columns
         )
     elif args.type == 'expanding_test':
         evaluate(
-            f'{HEART_TRANSPLANT_EXPANDING_IDENTIFIER}_{args.survival_days}_{args.group}',
+            f'{HEART_TRANSPLANT_SURVIVAL_ROLLING_IDENTIFIER}_{args.survival_days}_{args.group}',
             *get_expanding_window_inputs_for_test_cached(
-                survival_days=args.survival_days, group=AgeGroup(args.group)
+                survival_days=args.survival_days, group=AgeGroup[args.group]
             ),
             only_export_csv=args.only_export_csv,
             only_show_removed_columns=args.only_show_removed_columns
@@ -93,21 +93,21 @@ def evaluate(
 
     y_survival = get_survival_y(dataset_raw)
     #
-    # evaluate_and_assign_if_not_present(
-    #     persistence,
-    #     f'survival_cox_ph_default',
-    #     lambda: evaluate_method_on_sets(
-    #         lambda: get_cox_ph_pipeline(X_valid, y_survival, n_jobs=1, balance_class=True),
-    #         X_valid,
-    #         y_survival,
-    #         DefaultHyperParameters(),
-    #         splits=get_train_test_sampling(X_valid),
-    #         parallel=False,
-    #         n_jobs=20,
-    #         get_metrics=lambda _, results: get_classification_metrics(y, results)
-    #     ),
-    #     force_execute=True,
-    # )
+    evaluate_and_assign_if_not_present(
+        persistence,
+        f'survival_cox_ph_default',
+        lambda: evaluate_method_on_sets(
+            lambda: get_cox_ph_pipeline(X_valid, y_survival, n_jobs=1, balance_class=True),
+            X_valid,
+            y_survival,
+            DefaultHyperParameters(),
+            splits=get_train_test_sampling(X_valid),
+            parallel=False,
+            n_jobs=20,
+            get_metrics=lambda _, results: get_classification_metrics(y, results)
+        ),
+        force_execute=True,
+    )
 
     evaluate_and_assign_if_not_present(
         persistence,
@@ -116,12 +116,13 @@ def evaluate(
             lambda: get_cox_ph_pipeline(X_valid),
             X_valid,
             y_survival,
-            BayesianOptimization(cox_ph_hyperopt, iterations=1),
+            BayesianOptimization(cox_ph_hyperopt, iterations=10),
             splits=get_train_test_sampling(X_valid),
             parallel=False,
             n_jobs=5,
             get_metrics=lambda _, result: get_classification_metrics(y, result)
         ),
+        force_execute=True,
     )
 
 
