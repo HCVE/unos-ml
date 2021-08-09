@@ -12,8 +12,7 @@ jupyter notebook
 
 - Pipelines are stored in `./heart_transplant_evaluate_*.py`
  
-- Results are shown in `./results.ipynb`.
-
+- Results are shown in `./results.ipynb` (https://nbviewer.jupyter.org/github/HCVE/unos-ml/blob/master/results.ipynb).
 
 - The unos data are not part of this repo. You need to put them into `../unos-data/unos.csv`
 
