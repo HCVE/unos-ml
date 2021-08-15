@@ -8,13 +8,17 @@ pipenv install --dev
 jupyter notebook
 ```
 
+Additional dependencies: `R` and `pROC` package  
+
 ## How to
 
-- Pipelines are stored in `./heart_transplant_evaluate_*.py`
- 
 - Results are shown in `./results.ipynb` (https://nbviewer.jupyter.org/github/HCVE/unos-ml/blob/master/results.ipynb).
+  
+- Pipelines are defined in `./pipelines.py`
+ 
+- The script to run full analysis: `python ./run_all.py`. It saves data to `data` folder from where it is loaded by `results.ipynb`   
 
-- The unos data are not part of this repo. You need to put them into `../unos-data/unos.csv`
+- The UNOS data are not part of this repo. You need to put them into `../unos-data/unos.csv`
 
 
 ## Additional information

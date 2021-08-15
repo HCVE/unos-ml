@@ -7,6 +7,7 @@ verify_ssl = true
 python_version = "3.9"
 
 [packages]
+cython = "*"
 websockets = "*"
 pandas = "*"
 pyramda = "*"
@@ -28,7 +29,6 @@ scipy = "*"
 matplotlib = "*"
 functional-pipeline = "*"
 numpy = "*"
-typing-extensions = "*"
 PyALE = "*"
 qgrid = "*"
 minepy = "*"
